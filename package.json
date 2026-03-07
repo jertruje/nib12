@@ -1,0 +1,12 @@
+{
+  "name": "render-log-monitor",
+  "version": "1.0.0",
+  "main": "api/index.js",
+  "dependencies": {
+    "node-ssh": "^13.1.0",
+    "ws": "^8.13.0"
+  },
+  "scripts": {
+    "start": "node api/index.js"
+  }
+}
