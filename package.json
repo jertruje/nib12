@@ -4,8 +4,8 @@
   "description": "Bot de trading para Deriv com 24h de funcionamento",
   "main": "server.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "ws": "^8.14.2",
