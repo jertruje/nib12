@@ -1,12 +1,17 @@
 {
-  "name": "render-log-monitor",
+  "name": "bot-deriv-24h",
   "version": "1.0.0",
-  "main": "api/index.js",
-  "dependencies": {
-    "node-ssh": "^13.1.0",
-    "ws": "^8.13.0"
-  },
+  "description": "Bot de trading para Deriv com 24h de funcionamento",
+  "main": "server.js",
   "scripts": {
-    "start": "node api/index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.2",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
   }
 }
