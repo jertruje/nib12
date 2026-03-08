@@ -11,26 +11,29 @@ const https = require('https');
 // ============================================
 class WebOSServer {
     constructor() {
-        this.usuarios = new Map();
-        this.arquivos = new Map();
-        this.apps = new Map();
-        this.appRepository = new Map();
-        this.sessoes = new Map();
-        this.processos = new Map();
+        this.usuarios = new Map();        // Usuários conectados
+        this.arquivos = new Map();         // Sistema de arquivos virtual
+        this.apps = new Map();              // Aplicativos disponíveis
+        this.appRepository = new Map();   // Repositório de apps para download
+        this.sessoes = new Map();           // Sessões ativas
+        this.processos = new Map();         // Processos rodando
         
         this.discos = {
-            ssd: new DiscoVirtual('ssd', 100 * 1024 * 1024 * 1024),
-            hdd: new DiscoVirtual('hdd', 1000 * 1024 * 1024 * 1024),
-            backup: new BackupVirtual()
+            ssd: new DiscoVirtual('ssd', 100 * 1024 * 1024 * 1024), // 100GB
+            hdd: new DiscoVirtual('hdd', 1000 * 1024 * 1024 * 1024), // 1TB
+            backup: new BackupVirtual()       // Backup automático
         };
         
         this.init();
     }
     
     init() {
+        // Carrega apps padrão
         this.carregarAppsPadrao();
         this.carregarRepositorioApps();
-        this.carregarEstado();
+        this.carregarEstado(); // Carrega usuários e arquivos
+        
+        // Cria estrutura inicial de arquivos
         this.criarEstruturaInicial();
         
         console.log('🚀 Servidor WebOS iniciado!');
@@ -38,7 +41,7 @@ class WebOSServer {
     
     async carregarUsuarios() {
         try {
-            const dados = await fs.readFile(path.join(__dirname, 'users.json'), 'utf8');
+            const dados = await fs.readFile('users.json', 'utf8');
             const usuariosObj = JSON.parse(dados);
             for (const [nome, usuario] of Object.entries(usuariosObj)) {
                 usuario.criado = new Date(usuario.criado);
@@ -52,22 +55,27 @@ class WebOSServer {
     }
 
     async salvarEstado() {
+        // Salva Usuários
         const usuariosObj = Object.fromEntries(this.usuarios);
-        await fs.writeFile(path.join(__dirname, 'users.json'), JSON.stringify(usuariosObj, null, 2));
+        await fs.writeFile('users.json', JSON.stringify(usuariosObj, null, 2));
         
+        // Salva Metadata dos Arquivos
         const arquivosObj = Array.from(this.arquivos.entries());
-        await fs.writeFile(path.join(__dirname, 'filesystem.json'), JSON.stringify(arquivosObj, null, 2));
+        await fs.writeFile('filesystem.json', JSON.stringify(arquivosObj, null, 2));
         
+        // Salva Conteúdo do Disco SSD (Persistência Simples)
         const ssdDados = Array.from(this.discos.ssd.dados.entries());
-        await fs.writeFile(path.join(__dirname, 'disk_ssd.json'), JSON.stringify(ssdDados));
+        await fs.writeFile('disk_ssd.json', JSON.stringify(ssdDados));
     }
 
     async carregarEstado() {
         await this.carregarUsuarios();
         
+        // Carrega Metadata
         try {
-            const fsData = await fs.readFile(path.join(__dirname, 'filesystem.json'), 'utf8');
+            const fsData = await fs.readFile('filesystem.json', 'utf8');
             this.arquivos = new Map(JSON.parse(fsData));
+            // Restaura datas
             for (let [k, v] of this.arquivos) {
                 v.criado = new Date(v.criado);
                 v.modificado = new Date(v.modificado);
@@ -75,10 +83,12 @@ class WebOSServer {
             console.log(`📂 ${this.arquivos.size} arquivos indexados.`);
         } catch (e) { console.log('ℹ️ Novo sistema de arquivos.'); }
         
+        // Carrega Conteúdo SSD
         try {
-            const diskData = await fs.readFile(path.join(__dirname, 'disk_ssd.json'), 'utf8');
+            const diskData = await fs.readFile('disk_ssd.json', 'utf8');
             const entries = JSON.parse(diskData);
             this.discos.ssd.dados = new Map(entries);
+            // Restaura Buffers e Espaço Usado
             this.discos.ssd.espacoUsado = 0;
             for (let [k, v] of this.discos.ssd.dados) {
                 v.salvo = new Date(v.salvo);
@@ -91,10 +101,15 @@ class WebOSServer {
         } catch (e) { console.log('ℹ️ Disco SSD inicializado vazio.'); }
     }
 
+    // ========================================
+    // GERENCIAMENTO DE USUÁRIOS
+    // ========================================
     async conectarUsuario(ws, dados) {
         const { usuario, senha } = dados;
         
+        // Valida usuário (simplificado)
         if (!this.usuarios.has(usuario)) {
+            // Cria usuário novo
             this.usuarios.set(usuario, {
                 nome: usuario,
                 senha: senha,
@@ -107,6 +122,7 @@ class WebOSServer {
                 }
             });
             
+            // Cria pasta do usuário
             this.criarPastaUsuario(usuario);
             this.salvarEstado();
         } else {
@@ -119,15 +135,17 @@ class WebOSServer {
             this.salvarEstado();
         }
         
+        // Cria sessão
         const token = crypto.randomBytes(16).toString('hex');
         this.sessoes.set(token, {
             usuario,
             ws,
             conectado: new Date(),
             processos: [],
-            clipboard: ''
+            clipboard: '' // Área de transferência da sessão
         });
         
+        // Envia resposta
         ws.send(JSON.stringify({
             tipo: 'login_sucesso',
             token,
@@ -138,6 +156,7 @@ class WebOSServer {
         return token;
     }
     
+    // Envia notificação para o usuário
     enviarNotificacao(usuario, mensagem, tipo = 'info') {
         for (let [token, sessao] of this.sessoes) {
             if (sessao.usuario === usuario && sessao.ws.readyState === WebSocket.OPEN) {
@@ -150,21 +169,28 @@ class WebOSServer {
         }
     }
 
+    // ========================================
+    // SISTEMA DE ARQUIVOS
+    // ========================================
     async salvarArquivo(usuario, caminho, conteudo, tipo) {
         const caminhoCompleto = `/usuarios/${usuario}/${caminho}`;
+        
+        // Decide onde armazenar baseado no tamanho/tipo
         const tamanho = conteudo.length;
-        let destino = 'ssd';
+        let destino = 'ssd'; // Padrão para arquivos pequenos
         
-        if (tamanho > 100 * 1024 * 1024) {
+        if (tamanho > 100 * 1024 * 1024) { // > 100MB
             destino = 'hdd';
         }
         
-        if (tipo && tipo.includes('video/') && tamanho > 500 * 1024 * 1024) {
+        if (tipo && tipo.includes('video/') && tamanho > 500 * 1024 * 1024) { // > 500MB
             destino = 'hdd';
         }
         
+        // Salva no disco virtual
         const hash = await this.discos[destino].salvar(caminhoCompleto, conteudo);
         
+        // Registra metadata
         this.arquivos.set(caminhoCompleto, {
             nome: path.basename(caminho),
             caminho: caminhoCompleto,
@@ -178,10 +204,12 @@ class WebOSServer {
             backup: true
         });
         
+        // Backup automático para arquivos importantes
         if (tipo && (tipo.includes('document') || tipo.includes('text'))) {
             this.discos.backup.fazerBackup(caminhoCompleto, conteudo);
         }
         
+        // Persiste o estado no disco do servidor
         this.salvarEstado();
         
         return {
@@ -200,7 +228,10 @@ class WebOSServer {
             throw new Error('Arquivo não encontrado');
         }
         
+        // Lê do disco apropriado
         const conteudo = await this.discos[metadata.destino].ler(metadata.caminho, metadata.hash);
+        
+        // Cache em memória para acesso rápido
         this.cacheArquivo(caminhoCompleto, conteudo);
         
         return {
@@ -227,6 +258,7 @@ class WebOSServer {
     }
     
     cacheArquivo(caminho, conteudo) {
+        // Mantém últimos 100 arquivos em memória
         if (!this.cache) this.cache = new Map();
         
         if (this.cache.size > 100) {
@@ -240,7 +272,11 @@ class WebOSServer {
         });
     }
     
+    // ========================================
+    // APLICATIVOS
+    // ========================================
     carregarAppsPadrao() {
+        // App Gerenciador de Arquivos
         this.apps.set('file_manager', {
             nome: 'Gerenciador de Arquivos',
             versao: '1.0',
@@ -262,6 +298,7 @@ class WebOSServer {
             logica: (comando, args, usuario) => this.fileManagerLogic(comando, args, usuario)
         });
 
+        // App Calculadora
         this.apps.set('calculadora', {
             nome: 'Calculadora',
             versao: '1.0',
@@ -301,6 +338,7 @@ class WebOSServer {
             }
         });
         
+        // App Bloco de Notas
         this.apps.set('bloco_notas', {
             nome: 'Bloco de Notas',
             versao: '1.0',
@@ -363,6 +401,7 @@ class WebOSServer {
             }
         });
         
+        // App Visualizador de Fotos
         this.apps.set('fotos', {
             nome: 'Visualizador de Fotos',
             versao: '1.0',
@@ -421,6 +460,7 @@ class WebOSServer {
             }
         });
         
+        // App Navegador Google
         this.apps.set('navegador', {
             nome: 'Navegador Google',
             versao: '1.0',
@@ -477,6 +517,7 @@ class WebOSServer {
             }
         });
         
+        // App Store
         this.apps.set('app_store', {
             nome: 'App Store',
             versao: '1.0',
@@ -517,7 +558,7 @@ class WebOSServer {
                     const termo = args.termo.toLowerCase();
                     const appsEncontrados = [];
                     for (const [id, app] of this.appRepository) {
-                        if (!this.apps.has(id)) {
+                        if (!this.apps.has(id)) { // Só mostra apps não instalados
                             const nome = app.nome.toLowerCase();
                             const desc = (app.descricao || '').toLowerCase();
                             if (nome.includes(termo) || desc.includes(termo)) {
@@ -531,6 +572,7 @@ class WebOSServer {
             }
         });
 
+        // App Terminal
         this.apps.set('terminal', {
             nome: 'Terminal',
             versao: '1.0',
@@ -547,6 +589,7 @@ class WebOSServer {
             logica: (comando, args, usuario) => this.terminalLogic(comando, args, usuario)
         });
 
+        // App Gerenciador de Tarefas
         this.apps.set('task_manager', {
             nome: 'Gerenciador de Tarefas',
             versao: '1.0',
@@ -580,6 +623,7 @@ class WebOSServer {
             logica: (comando, args, usuario) => this.taskManagerLogic(comando, args, usuario)
         });
 
+        // App Clipboard Viewer
         this.apps.set('clipboard_viewer', {
             nome: 'Área de Transferência',
             versao: '1.0',
@@ -595,9 +639,10 @@ class WebOSServer {
                     <textarea id="clipboard-content-{id}" style="flex:1; width:100%; border:none; padding:10px; resize:none;" readonly placeholder="Clique em 'Atualizar' para ver o conteúdo..."></textarea>
                 </div>
             `,
-            logica: () => ({ status: 'ok' })
+            logica: () => ({ status: 'ok' }) // A lógica é toda no cliente
         });
 
+        // App Game Center (Movido para Apps Padrão)
         this.apps.set('game_center', {
             nome: 'Game Center',
             versao: '1.0',
@@ -621,11 +666,13 @@ class WebOSServer {
             logica: (comando, args) => this.gameCenterLogic(comando, args)
         });
 
+        // App Android Emulator (Appetize.io)
         this.apps.set('android_emulator', {
             nome: 'Android Emulator',
             versao: '1.0',
             tipo: 'emulador',
             icone: '🤖',
+            descricao: 'Emulador Android via Appetize.io. Requer API Token.',
             descricao: 'Emulador Android via Appetize.io.',
             ui: `
                 <div class="app-android" style="width:100%; height:100%; display:flex; flex-direction:column; background:#1e1e1e; color:white;">
@@ -655,6 +702,7 @@ class WebOSServer {
     }
     
     carregarRepositorioApps() {
+        // App Paint (para download)
         this.appRepository.set('paint', {
             nome: 'Paint',
             versao: '1.0',
@@ -674,10 +722,12 @@ class WebOSServer {
                 </div>
             `,
             logica: (comando, args) => {
+                // A lógica principal do Paint é no cliente
                 return { status: 'ok' };
             }
         });
         
+        // App Crypto Tracker (Usa API Real)
         this.appRepository.set('crypto', {
             nome: 'Crypto Tracker',
             versao: '2.0',
@@ -711,6 +761,7 @@ class WebOSServer {
             }
         });
         
+        // App Clima (API Open-Meteo)
         this.appRepository.set('clima', {
             nome: 'Clima Global',
             versao: '1.5',
@@ -730,6 +781,7 @@ class WebOSServer {
             logica: (comando, args) => this.climaLogic(comando, args)
         });
 
+        // App Wikipedia (API Wikipedia)
         this.appRepository.set('wikipedia', {
             nome: 'Wikipedia',
             versao: '2.0',
@@ -750,6 +802,7 @@ class WebOSServer {
             logica: (comando, args) => this.wikiLogic(comando, args)
         });
 
+        // App Tech News (API Hacker News)
         this.appRepository.set('news', {
             nome: 'Tech News',
             versao: '1.0',
@@ -768,6 +821,7 @@ class WebOSServer {
             logica: (comando, args) => this.newsLogic(comando, args)
         });
 
+        // App Emulador SNES (WebAssembly)
         this.appRepository.set('snes_emulator', {
             nome: 'Emulador SNES (Wasm)',
             versao: '3.0',
@@ -781,6 +835,7 @@ class WebOSServer {
             logica: () => ({ status: 'ok' })
         });
 
+        // App Emulador NES
         this.appRepository.set('nes_emulator', {
             nome: 'Emulador NES (Wasm)',
             versao: '1.0',
@@ -790,6 +845,7 @@ class WebOSServer {
             logica: () => ({ status: 'ok' })
         });
 
+        // App Emulador GBA
         this.appRepository.set('gba_emulator', {
             nome: 'Emulador GBA (Wasm)',
             versao: '1.0',
@@ -799,6 +855,7 @@ class WebOSServer {
             logica: () => ({ status: 'ok' })
         });
 
+        // App Photopea
         this.appRepository.set('photopea', {
             nome: 'Photopea',
             versao: 'Web',
@@ -816,6 +873,7 @@ class WebOSServer {
             logica: () => ({ status: 'ok' })
         });
 
+        // App VS Code Web
         this.appRepository.set('vscode_web', {
             nome: 'VS Code Web',
             versao: 'Web',
@@ -838,6 +896,7 @@ class WebOSServer {
             }
         });
 
+        // App Windows 98 Emulator
         this.appRepository.set('win98', {
             nome: 'Windows 98 Emulator',
             versao: 'v86',
@@ -862,6 +921,7 @@ class WebOSServer {
             }
         });
 
+        // App Linux (Demonstração de outro OS via WebAssembly)
         this.appRepository.set('linux', {
             nome: 'Linux Terminal',
             versao: 'Kernel 2.6',
@@ -872,6 +932,7 @@ class WebOSServer {
             logica: () => ({ status: 'ok' })
         });
 
+        // App DOOM
         this.appRepository.set('doom', {
             nome: 'DOOM (MS-DOS)',
             versao: 'Shareware',
@@ -886,14 +947,17 @@ class WebOSServer {
     async fileManagerLogic(comando, args, usuario) {
         if (comando === 'listar') {
             let caminho = args.caminho !== undefined ? args.caminho : '';
+            // Normaliza caminho (remove barra final se houver)
             if (caminho.endsWith('/')) caminho = caminho.slice(0, -1);
             
             const todosArquivos = await this.listarArquivos(usuario, caminho);
             const itens = [];
             
+            // Filtra apenas filhos diretos
             for (const arq of todosArquivos) {
                 let rel = arq.caminho_relativo;
                 
+                // Se estamos em uma subpasta, remove o prefixo da pasta atual
                 if (caminho) {
                     if (!rel.startsWith(caminho + '/')) continue;
                     rel = rel.substring(caminho.length + 1);
@@ -901,6 +965,7 @@ class WebOSServer {
                 
                 const partes = rel.split('/');
                 
+                // Se só tem uma parte, é um filho direto
                 if (partes.length === 1) {
                     itens.push({
                         nome: arq.nome,
@@ -916,9 +981,11 @@ class WebOSServer {
         if (comando === 'pesquisar') {
             const termo = (args.termo || '').toLowerCase();
             if (!termo) {
+                // Se a pesquisa for vazia, apenas liste o diretório atual
                 return this.fileManagerLogic('listar', { caminho: args.caminho }, usuario);
             }
             
+            // Pesquisa em todos os arquivos do usuário
             const todosArquivos = await this.listarArquivos(usuario, ''); 
             const itens = todosArquivos
                 .filter(arq => arq.nome.toLowerCase().includes(termo))
@@ -926,6 +993,7 @@ class WebOSServer {
                     nome: arq.nome,
                     tipo: arq.tipo,
                     caminho: arq.caminho_relativo,
+                    // Adiciona o caminho do pai para contexto
                     contexto: path.dirname(arq.caminho_relativo), 
                     icone: arq.tipo === 'directory' ? '📁' : (arq.tipo.startsWith('image') ? '🖼️' : '📄')
                 }));
@@ -943,11 +1011,12 @@ class WebOSServer {
     }
 
     async androidEmulatorLogic(comando, args) {
-        const token = 'tok_lbdrpyxhox4eivc5roarla2vqq';
+        const token = 'tok_lbdrpyxhox4eivc5roarla2vqq'; // Token fixo configurado
 
         if (comando === 'buscar') {
             const termo = args.termo;
             return new Promise(resolve => {
+                // Busca APKs no Internet Archive
                 const url = `https://archive.org/advancedsearch.php?q=collection:(apkarchive) AND title:(${encodeURIComponent(termo)})&fl[]=identifier,title&rows=10&output=json`;
                 https.get(url, { headers: { 'User-Agent': 'WebOS-Server/1.0' } }, res => {
                     let data = '';
@@ -957,6 +1026,7 @@ class WebOSServer {
                             const json = JSON.parse(data);
                             const docs = (json.response.docs || []).map(doc => ({
                                 title: doc.title,
+                                // Tenta adivinhar a URL de download direto baseada no identificador
                                 apkUrl: `https://archive.org/download/${doc.identifier}/${doc.identifier}.apk`
                             }));
                             resolve({ resultados: docs });
@@ -1031,21 +1101,22 @@ class WebOSServer {
                             const json = JSON.parse(data);
                             const docs = (json.response.docs || []).map(doc => {
                                 const identifier = doc.identifier;
+                                // Heurística para adivinhar o nome do arquivo.
                                 const romFile = `${doc.title.replace(/ \([^)]*\)/g, '')}.${system === 'gba' ? 'gba' : system === 'gbc' ? 'gbc' : system === 'nes' ? 'nes' : 'sfc'}`;
                                 const romUrl = `https://archive.org/download/${identifier}/${encodeURIComponent(romFile)}`;
                                 return { title: doc.title, romUrl, system };
                             });
                             resolve(docs);
                         } catch (e) {
-                            resolve([]);
+                            resolve([]); // Retorna array vazio em caso de erro de parse
                         }
                     });
-                }).on('error', () => resolve([]));
+                }).on('error', () => resolve([])); // Retorna array vazio em caso de erro de conexão
             });
         });
 
         const results = await Promise.all(searchPromises);
-        const allGames = results.flat();
+        const allGames = results.flat(); // Junta os resultados de todas as coleções
 
         return { jogos: allGames };
     }
@@ -1098,6 +1169,7 @@ class WebOSServer {
                         const json = JSON.parse(data);
                         const docs = json.response.docs.map(doc => {
                             const identifier = doc.identifier;
+                            // Heurística para adivinhar o nome do arquivo. Pode falhar.
                             const romFile = `${doc.title.split(' (')[0]}.sfc`; 
                             const romUrl = `https://archive.org/download/${identifier}/${encodeURIComponent(romFile)}`;
                             return { title: doc.title, romUrl };
@@ -1113,6 +1185,9 @@ class WebOSServer {
         });
     }
 
+    // ========================================
+    // LÓGICA DO APP TERMINAL
+    // ========================================
     async terminalLogic(comando, args, usuario) {
         const [cmd, ...params] = comando.trim().split(' ');
         let estado = args.estado || { caminho_atual: '' };
@@ -1163,10 +1238,12 @@ class WebOSServer {
         }
     }
 
+    // Lógica do Clima (Open-Meteo)
     async climaLogic(comando, args) {
         if (comando === 'buscar') {
             const cidade = args.cidade;
             return new Promise(resolve => {
+                // 1. Geocoding
                 https.get(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cidade)}&count=1&language=pt`, (res) => {
                     let data = '';
                     res.on('data', c => data += c);
@@ -1179,6 +1256,7 @@ class WebOSServer {
                             }
                             const { latitude, longitude, name, country } = geo.results[0];
                             
+                            // 2. Weather
                             https.get(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true`, (res2) => {
                                 let data2 = '';
                                 res2.on('data', c => data2 += c);
@@ -1198,6 +1276,7 @@ class WebOSServer {
         return {};
     }
 
+    // Lógica da Wikipedia
     async wikiLogic(comando, args) {
         if (comando === 'buscar') {
             return new Promise(resolve => {
@@ -1232,6 +1311,7 @@ class WebOSServer {
         return {};
     }
 
+    // Lógica do Hacker News
     async newsLogic(comando, args) {
         if (comando === 'listar') {
             return new Promise(resolve => {
@@ -1249,6 +1329,7 @@ class WebOSServer {
         return {};
     }
 
+    // Lógica do Gerenciador de Tarefas
     taskManagerLogic(comando, args, usuario) {
         if (comando === 'listar') {
             const lista = [];
@@ -1258,8 +1339,8 @@ class WebOSServer {
                     lista.push({
                         pid: pid,
                         nome: app ? app.nome : proc.app,
-                        cpu: Math.floor(Math.random() * 15) + '%',
-                        memoria: Math.floor(Math.random() * 200) + 50 + ' MB'
+                        cpu: Math.floor(Math.random() * 15) + '%', // Simulado
+                        memoria: Math.floor(Math.random() * 200) + 50 + ' MB' // Simulado
                     });
                 }
             }
@@ -1279,6 +1360,9 @@ class WebOSServer {
         return {};
     }
 
+    // ========================================
+    // LÓGICA DOS APPS
+    // ========================================
     calculadoraLogic(comando, args) {
         const acao = comando;
         let { estado } = args;
@@ -1329,6 +1413,7 @@ class WebOSServer {
                 return estado;
                 
             default:
+                // Número
                 if (!isNaN(acao)) {
                     const novoDisplay = estado.display === '0' ? acao : estado.display + acao;
                     return { ...estado, display: novoDisplay };
@@ -1338,6 +1423,9 @@ class WebOSServer {
     }
     
     blocoNotasLogic(comando, args, usuario) {
+        // A lógica de arquivos foi movida para o cliente usando a File System Access API.
+        // O servidor não precisa mais gerenciar o conteúdo dos arquivos de texto.
+        // Esta função é mantida para que o app possa ser aberto, mas não faz mais operações de arquivo.
         return { status: 'ok' };
     }
     
@@ -1355,6 +1443,7 @@ class WebOSServer {
             case 'ver':
                 return this.lerArquivo(usuario, `Fotos/${foto}`)
                     .then(arquivo => {
+                        // Converte para base64 para exibição
                         const base64 = arquivo.conteudo.toString('base64');
                         return {
                             nome: foto,
@@ -1380,6 +1469,9 @@ class WebOSServer {
         }
     }
     
+    // ========================================
+    // EXECUÇÃO DE APPS
+    // ========================================
     async abrirApp(usuario, appNome, params = {}) {
         const app = this.apps.get(appNome);
         
@@ -1387,6 +1479,7 @@ class WebOSServer {
             throw new Error('App não encontrado');
         }
         
+        // Cria processo
         const processoId = crypto.randomBytes(8).toString('hex');
         const processo = {
             id: processoId,
@@ -1398,6 +1491,7 @@ class WebOSServer {
         
         this.processos.set(processoId, processo);
         
+        // Registra na sessão
         for (let [token, sessao] of this.sessoes) {
             if (sessao.usuario === usuario) {
                 sessao.processos.push(processoId);
@@ -1405,7 +1499,8 @@ class WebOSServer {
             }
         }
         
-        let ui = app.ui;
+        // Prepara UI (substitui placeholders)
+        let ui = app.ui; // Envia o template cru para o cliente
         
         if (params.romUrl) {
             ui = ui.replace(/\{romUrl\}/g, encodeURIComponent(params.romUrl));
@@ -1420,7 +1515,7 @@ class WebOSServer {
                 tipo: app.tipo,
                 scripts: app.scripts || [] 
             },
-            params
+            params // Passa parâmetros (como arquivo para abrir) de volta para o cliente
         };
     }
     
@@ -1433,12 +1528,15 @@ class WebOSServer {
         
         const app = this.apps.get(processo.app);
         
+        // Executa lógica do app (pode ser async)
         let resultado = app.logica(comando, args, usuario);
         
+        // Se for Promise, aguarda
         if (resultado && resultado.then) {
             resultado = await resultado;
         }
         
+        // Atualiza estado do processo se necessário
         if (resultado && typeof resultado === 'object') {
             processo.estado = { ...processo.estado, ...resultado };
         }
@@ -1475,12 +1573,16 @@ class WebOSServer {
         };
     }
     
+    // ========================================
+    // MÉTODOS AUXILIARES
+    // ========================================
     criarPastaUsuario(usuario) {
         const pastas = ['Documentos', 'Fotos', 'Videos', 'Downloads', 'Desktop'];
         
         pastas.forEach(pasta => {
             const caminho = `/usuarios/${usuario}/${pasta}`;
             
+            // Cria entrada de diretório
             this.arquivos.set(caminho, {
                 nome: pasta,
                 caminho,
@@ -1492,12 +1594,14 @@ class WebOSServer {
     }
     
     criarEstruturaInicial() {
+        // Pasta raiz de usuários
         this.arquivos.set('/usuarios', {
             nome: 'usuarios',
             caminho: '/usuarios',
             tipo: 'directory'
         });
         
+        // Arquivos de sistema
         this.arquivos.set('/sistema/config.json', {
             nome: 'config.json',
             caminho: '/sistema/config.json',
@@ -1508,6 +1612,7 @@ class WebOSServer {
     }
     
     async getAreaTrabalho(usuario) {
+        // Lista atalhos e apps padrão
         return {
             atalhos: [
                 { nome: 'Meus Documentos', icone: '📁', caminho: `/usuarios/${usuario}/Documentos` },
@@ -1522,6 +1627,9 @@ class WebOSServer {
     }
 }
 
+// ============================================
+// DISCOS VIRTUAIS
+// ============================================
 class DiscoVirtual {
     constructor(nome, tamanhoMaximo) {
         this.nome = nome;
@@ -1573,6 +1681,7 @@ class BackupVirtual {
             hash: crypto.createHash('sha256').update(conteudo).digest('hex')
         });
         
+        // Mantém só últimos 5 backups
         if (this.backups.get(caminho).length > 5) {
             this.backups.get(caminho).shift();
         }
@@ -1581,18 +1690,22 @@ class BackupVirtual {
     }
 }
 
+// ============================================
+// SERVIDOR WEBSOCKET
+// ============================================
 const server = http.createServer((req, res) => {
+    // Ignora requisições pelo favicon para não poluir o log.
     if (req.url === '/favicon.ico') {
         res.writeHead(204, { 'Content-Type': 'image/x-icon' });
         res.end();
         return;
     }
 
-    console.log(`\n➡️  [${new Date().toLocaleTimeString()}] Requisição HTTP: ${req.method} ${req.url}`);
+    // Log para cada requisição HTTP, para facilitar o debug inicial.
+    console.log(`\n➡️  [${new Date().toLocaleTimeString()}] Requisição HTTP: ${req.method} ${req.url} (IP: ${req.socket.remoteAddress})`);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(clienteHTML);
 });
-
 const wss = new WebSocket.Server({ server });
 const webos = new WebOSServer();
 
@@ -1728,22 +1841,43 @@ wss.on('connection', (ws, req) => {
     });
 });
 
-const PORT = process.env.PORT || 8080;
+// ============================================
+// INICIA SERVIDOR
+// ============================================
+const PORT = 8080;
 
-server.listen(PORT, '0.0.0.0', () => {
+server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') {
+        console.log(`\n❌ ERRO CRÍTICO: A porta ${PORT} já está sendo usada.`);
+        console.log('👉 Isso geralmente acontece porque o servidor já está rodando em outro terminal.');
+        console.log('\nCOMO RESOLVER:');
+        console.log('1. Encontre o outro terminal e pressione Ctrl+C para parar o servidor.');
+        console.log('2. Se não encontrar, use os seguintes comandos no seu terminal (CMD ou PowerShell):');
+        console.log(`   a) Para encontrar o processo: netstat -ano | findstr :${PORT}`);
+        console.log('   b) Anote o número na última coluna (é o PID).');
+        console.log('   c) Para forçar o fechamento: taskkill /PID SEU_NUMERO_PID /F');
+        process.exit(1);
+    }
+});
+
+server.listen(PORT, () => {
     console.log(`
     ╔══════════════════════════════════════╗
     ║     🚀 WEBOS SERVER RODANDO          ║
     ║    📡 Acesso: http://localhost:${PORT}   ║
     ║    💾 Discos: SSD (100GB) + HDD (1TB)║
     ║    👥 Usuários: Ilimitado            ║
-    ║    📱 Apps: +20 aplicativos          ║
+    ║    📱 Apps: Calculadora, Notas, Fotos║
     ╚══════════════════════════════════════╝
     `);
     console.log('📌 Abra o endereço acima no seu navegador para usar o WebOS.');
 });
 
-const clienteHTML = `<!DOCTYPE html>
+// ============================================
+// CLIENTE DE TESTE (HTML)
+// ============================================
+const clienteHTML = `
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -3068,4 +3202,1514 @@ function conectarWebSocket() {
             case 'login_sucesso':
                 token = dados.token;
                 usuarioAtual = dados.usuario;
-      `;
+                document.getElementById('login').style.display = 'none';
+                document.getElementById('area-trabalho').style.display = 'block';
+                mostrarNotificacao(\`Bem-vindo, \${usuarioAtual.nome}!\`, 'sucesso');
+                if (dados.area_trabalho && dados.area_trabalho.atalhos) {
+                    renderizarIconesDesktop(dados.area_trabalho.atalhos);
+                }
+                break;
+                
+            case 'app_aberto':
+                abrirJanelaApp(dados);
+                break;
+                
+            case 'resultado_comando':
+                processarResultadoComando(dados);
+                break;
+                
+            case 'notificacao':
+                mostrarNotificacao(dados.mensagem, dados.nivel);
+                break;
+                
+            case 'lista_apps':
+                atualizarListaApps(dados.apps);
+                break;
+                
+            case 'app_instalado':
+                mostrarNotificacao(\`App \${dados.app.nome} instalado!\`, 'sucesso');
+                adicionarAppAoDock(dados.app);
+                break;
+            
+            case 'lista_arquivos':
+                if (dados.reqId && seletorCallbacks.has(dados.reqId)) {
+                    seletorCallbacks.get(dados.reqId)(dados);
+                }
+                break;
+
+            case 'arquivo_lido':
+                if (dados.reqId) {
+                    const textarea = document.getElementById('texto-' + dados.reqId);
+                    if (textarea) {
+                        // Decodifica Base64 UTF-8 corretamente
+                        const texto = decodeURIComponent(escape(atob(dados.conteudo)));
+                        textarea.value = texto;
+                        atualizarStatusNotas(dados.reqId);
+                        mostrarNotificacao('Arquivo carregado com sucesso!', 'sucesso');
+                    }
+                }
+                break;
+                
+            case 'clipboard_content':
+                clipboard = dados.conteudo;
+                atualizarClipboardViewer();
+                break;
+                
+            case 'erro':
+                mostrarNotificacao('Erro: ' + dados.mensagem, 'erro');
+                // Reabilita o botão de login se o erro ocorrer na tela de login
+                const loginButton = document.getElementById('login-button');
+                if (loginButton && document.getElementById('login').style.display !== 'none') {
+                    loginButton.disabled = false;
+                    loginButton.textContent = 'Continuar';
+                }
+                break;
+        }
+    };
+    
+    socket.onclose = () => {
+        console.log('❌ Desconectado do servidor');
+        atualizarStatus(false);
+        const loginButton = document.getElementById('login-button');
+        if (loginButton && document.getElementById('login').style.display !== 'none') {
+            loginButton.disabled = true;
+            loginButton.textContent = 'Reconectando...';
+        }
+        mostrarNotificacao('Conexão perdida. Tentando reconectar...', 'erro');
+        setTimeout(conectarWebSocket, 3000);
+    };
+    
+    socket.onerror = (erro) => {
+        console.error('Erro no WebSocket:', erro);
+        atualizarStatus(false);
+    };
+}
+
+function atualizarStatus(conectado) {
+    const indicator = document.getElementById('status-indicator');
+    const text = document.getElementById('status-text');
+    const overlay = document.getElementById('connection-overlay');
+    
+    if (conectado) {
+        indicator.className = 'status-indicator';
+        text.textContent = 'Conectado';
+        if (overlay) {
+            overlay.style.display = 'none';
+        }
+    } else {
+        indicator.className = 'status-indicator disconnected';
+        text.textContent = 'Desconectado';
+        if (overlay) {
+            overlay.style.display = 'flex';
+        }
+    }
+}
+
+// ============================================
+// LOGIN
+// ============================================
+function fazerLogin() {
+    console.log('🔑 Botão de login clicado. Iniciando processo...');
+    const loginButton = document.getElementById('login-button');
+    const usuario = document.getElementById('usuario').value;
+    const senha = document.getElementById('senha').value;
+    
+    if (!usuario || !senha) {
+        mostrarNotificacao('Preencha usuário e senha', 'erro');
+        return;
+    }
+    
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+        mostrarNotificacao('Ainda conectando ao servidor, por favor aguarde.', 'info');
+        return;
+    }
+    
+    loginButton.disabled = true;
+    loginButton.textContent = 'Entrando...';
+    
+    socket.send(JSON.stringify({
+        tipo: 'login',
+        usuario,
+        senha
+    }));
+}
+
+// ============================================
+// GERENCIAMENTO DE APPS
+// ============================================
+function renderizarIconesDesktop(atalhos) {
+    const areaApps = document.getElementById('area-apps');
+    
+    let iconContainer = document.getElementById('desktop-icons');
+    if (!iconContainer) {
+        iconContainer = document.createElement('div');
+        iconContainer.id = 'desktop-icons';
+        areaApps.appendChild(iconContainer);
+    }
+    iconContainer.innerHTML = '';
+
+    atalhos.forEach(atalho => {
+        const iconDiv = document.createElement('div');
+        iconDiv.className = 'desktop-icon';
+
+        iconDiv.innerHTML = \`
+            <div class="icon">\${atalho.icone}</div>
+            <div class="name">\${atalho.nome}</div>
+        \`;
+
+        if (atalho.app) {
+            iconDiv.onclick = () => abrirApp(atalho.app);
+        } else if (atalho.caminho) {
+            // Extrai o caminho relativo para o file manager
+            const caminhoRelativo = atalho.caminho.replace(\`/usuarios/\${usuarioAtual.nome}/\`, '');
+            iconDiv.onclick = () => abrirApp('file_manager', { caminho: caminhoRelativo });
+        }
+
+        iconContainer.appendChild(iconDiv);
+    });
+}
+
+function abrirApp(appNome, params = {}) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+        mostrarNotificacao('Servidor não conectado', 'erro');
+        return;
+    }
+    
+    socket.send(JSON.stringify({
+        tipo: 'abrir_app',
+        app: appNome,
+        params
+    }));
+}
+
+function adicionarAppAoDock(app) {
+    const dock = document.getElementById('dock');
+    if (!dock) return;
+
+    // Evita adicionar ícones duplicados
+    const existingIcons = dock.querySelectorAll('.dock-icon');
+    for (let icon of existingIcons) {
+        if (icon.getAttribute('data-tooltip') === app.nome) {
+            return; // App já está no dock
+        }
+    }
+
+    const separator = dock.querySelector('.dock-separator');
+    const newIcon = document.createElement('div');
+    newIcon.className = 'dock-icon';
+    newIcon.setAttribute('data-tooltip', app.nome);
+    newIcon.innerHTML = app.icone || '📦';
+    newIcon.onclick = () => abrirApp(app.id);
+
+    // Insere o novo ícone antes do separador
+    dock.insertBefore(newIcon, separator);
+}
+
+function abrirJanelaApp(dados) {
+    const { processoId, ui, app, params } = dados;
+    const areaApps = document.getElementById('area-apps');
+    
+    // Cria container da janela
+    const janela = document.createElement('div');
+    janela.className = 'janela';
+    janela.id = \`janela-\${processoId}\`;
+    janela.style.left = '100px';
+    janela.style.top = '100px';
+    janela.style.width = '800px';
+    janela.style.height = '600px';
+    janela.style.zIndex = proximaZIndex++;
+    
+    // Processa a UI substituindo placeholders
+    let uiProcessada = ui.replace(/{id}/g, processoId);
+    
+    // Monta HTML da janela
+    janela.innerHTML = \`
+        <div class="barra-titulo">
+            <div class="window-controls">
+                <span class="window-control close" onclick="fecharJanela('\${processoId}')"></span>
+                <span class="window-control minimize" onclick="minimizarJanela('\${processoId}')"></span>
+                <span class="window-control maximize" onclick="maximizarJanela('\${processoId}')"></span>
+            </div>
+            <div class="window-title">
+                <span>\${app.nome}</span>
+                <small style="font-size: 10px; opacity: 0.6;">v\${app.versao}</small>
+            </div>
+        </div>
+        <div class="conteudo" id="conteudo-\${processoId}">
+            \${uiProcessada}
+        </div>
+    \`;
+    
+    areaApps.appendChild(janela);
+    
+    // Torna a janela arrastável
+    tornarArrastavel(janela);
+    
+    // Traz para frente ao clicar
+    janela.addEventListener('mousedown', () => {
+        janela.style.zIndex = proximaZIndex++;
+    });
+    
+    // Injeta scripts específicos do app se necessário
+    if (app.scripts) {
+        app.scripts.forEach(script => {
+            const scriptTag = document.createElement('script');
+            scriptTag.src = script;
+            document.head.appendChild(scriptTag);
+        });
+    }
+    
+    // Registra o processo
+    processosAbertos.set(processoId, {
+        janela,
+        app: app.nome,
+        estado: {}
+    });
+    
+    // Adiciona ao dock como ativo
+    destacarAppNoDock(app.nome);
+
+    // Dispara comando inicial para apps que precisam carregar dados
+    switch(app.nome) {
+        case 'Visualizador de Fotos':
+            enviarComandoApp(processoId, 'listar');
+            break;
+        case 'App Store':
+            // Lista os apps em destaque ao abrir
+            enviarComandoApp(processoId, 'listar');
+            break;
+        case 'Gerenciador de Arquivos':
+            const caminhoInicial = params && params.caminho ? params.caminho : '';
+            enviarComandoApp(processoId, 'listar', { caminho: caminhoInicial });
+            break;
+        case 'Tech News':
+            atualizarNews(processoId);
+            break;
+        case 'Gerenciador de Tarefas':
+            atualizarTarefas(processoId);
+            break;
+    }
+
+    // Auto-abrir arquivo se passado nos parâmetros
+    if (params && params.arquivo && app.nome === 'Bloco de Notas') {
+        socket.send(JSON.stringify({
+            tipo: 'ler_arquivo',
+            caminho: params.arquivo,
+            reqId: processoId
+        }));
+    }
+}
+
+function tornarArrastavel(elemento) {
+    let offsetX, offsetY, mouseX, mouseY;
+    
+    // Agora permite arrastar clicando em qualquer lugar da janela (elemento)
+    elemento.addEventListener('mousedown', (e) => {
+        // Verifica se o clique NÃO foi em um elemento interativo (botão, input, texto, etc.)
+        const target = e.target;
+        const tagName = target.tagName.toUpperCase();
+        
+        if (['INPUT', 'TEXTAREA', 'BUTTON', 'SELECT', 'A', 'IFRAME', 'CANVAS', 'VIDEO', 'IMG'].includes(tagName) || 
+            target.classList.contains('window-control') ||
+            target.isContentEditable ||
+            target.closest('.calc-button') || // Exceção para calculadora
+            target.closest('.app-item button') // Exceção para botões da loja
+           ) {
+            return; // Não arrasta se clicou em algo interativo
+        }
+        
+        e.preventDefault();
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+        
+        document.onmousemove = (e) => {
+            e.preventDefault();
+            offsetX = mouseX - e.clientX;
+            offsetY = mouseY - e.clientY;
+            mouseX = e.clientX;
+            mouseY = e.clientY;
+            
+            let novaTop = elemento.offsetTop - offsetY;
+            let novaLeft = elemento.offsetLeft - offsetX;
+            
+            if (novaTop < 0) novaTop = 0; // Impede que a janela suba além do cabeçalho
+            
+            elemento.style.top = novaTop + 'px';
+            elemento.style.left = novaLeft + 'px';
+        };
+        
+        document.onmouseup = () => {
+            document.onmousemove = null;
+            document.onmouseup = null;
+        };
+    });
+}
+
+function fecharJanela(processoId) {
+    const janela = document.getElementById(\`janela-\${processoId}\`);
+    if (janela) {
+        janela.remove();
+        processosAbertos.delete(processoId);
+    }
+}
+
+function minimizarJanela(processoId) {
+    const janela = document.getElementById(\`janela-\${processoId}\`);
+    if (janela) {
+        janela.style.display = 'none';
+    }
+}
+
+function maximizarJanela(processoId) {
+    const janela = document.getElementById(\`janela-\${processoId}\`);
+    if (janela) {
+        janela.classList.toggle('maximized');
+    }
+}
+
+function destacarAppNoDock(appNome) {
+    const icons = document.querySelectorAll('.dock-icon');
+    icons.forEach(icon => {
+        if (icon.getAttribute('data-tooltip') === appNome) {
+            icon.classList.add('active');
+        }
+    });
+}
+
+// ============================================
+// COMANDOS DOS APPS
+// ============================================
+function enviarComandoApp(processoId, comando, args = {}, callback = null) {
+    if (callback) {
+        pendingCallbacks.set(processoId, callback);
+    }
+    socket.send(JSON.stringify({
+        tipo: 'comando_app',
+        processoId,
+        comando,
+        args
+    }));
+}
+
+function processarResultadoComando(dados) {
+    const { processoId, comando, resultado, app } = dados;
+    
+    if (pendingCallbacks.has(processoId)) {
+        const callback = pendingCallbacks.get(processoId);
+        callback(resultado);
+        pendingCallbacks.delete(processoId);
+        return;
+    }
+    
+    // Roteia para o handler específico do app
+    switch(app) {
+        case 'calculadora':
+            processarResultadoCalculadora(processoId, resultado);
+            break;
+        case 'terminal':
+            processarResultadoTerminal(processoId, resultado);
+            break;
+        case 'fotos':
+            processarResultadoFotos(processoId, resultado);
+            break;
+        case 'task_manager':
+            processarResultadoTaskManager(processoId, resultado);
+            break;
+        case 'app_store':
+            processarResultadoAppStore(processoId, resultado);
+            break;
+        case 'game_center':
+            processarResultadoGameCenter(processoId, resultado);
+            break;
+        case 'file_manager':
+            processarResultadoFileManager(processoId, resultado);
+            break;
+    }
+}
+
+// ============================================
+// APP: PAINT (CORREÇÃO initPaint)
+// ============================================
+window.initPaint = function(processoId, btn) {
+    const canvas = document.getElementById(\`canvas-\${processoId}\`);
+    const colorPicker = document.getElementById(\`paint-color-\${processoId}\`);
+    const sizePicker = document.getElementById(\`paint-size-\${processoId}\`);
+    
+    if (!canvas) return;
+    
+    // Oculta o botão após iniciar
+    if(btn) btn.style.display = 'none';
+    
+    const ctx = canvas.getContext('2d');
+    
+    // Ajusta tamanho do canvas
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height - 50; // Altura da toolbar
+    
+    let painting = false;
+    
+    function startPosition(e) {
+        painting = true;
+        draw(e);
+    }
+    
+    function endPosition() {
+        painting = false;
+        ctx.beginPath();
+    }
+    
+    function draw(e) {
+        if (!painting) return;
+        
+        const rect = canvas.getBoundingClientRect();
+        const x = (e.clientX || e.touches[0].clientX) - rect.left;
+        const y = (e.clientY || e.touches[0].clientY) - rect.top;
+        
+        ctx.lineWidth = sizePicker.value;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = colorPicker.value;
+        
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+    }
+    
+    canvas.addEventListener('mousedown', startPosition);
+    canvas.addEventListener('mouseup', endPosition);
+    canvas.addEventListener('mousemove', draw);
+};
+
+// ============================================
+// APP: CALCULADORA
+// ============================================
+window.calc = function(processoId, valor) {
+    enviarComandoApp(processoId, valor, {
+        estado: processosAbertos.get(processoId)?.estado
+    });
+};
+
+function processarResultadoCalculadora(processoId, resultado) {
+    const display = document.getElementById(\`display-\${processoId}\`);
+    if (display && resultado.display !== undefined) {
+        display.textContent = resultado.display;
+    }
+    
+    // Atualiza estado
+    const processo = processosAbertos.get(processoId);
+    if (processo) {
+        processo.estado = resultado;
+    }
+}
+
+// ============================================
+// APP: GERENCIADOR DE ARQUIVOS
+// ============================================
+window.fmPesquisar = function(processoId) {
+    const input = document.getElementById('fm-search-' + processoId);
+    const termo = input.value;
+    const pathInput = document.getElementById('fm-path-' + processoId);
+    const caminhoAtual = pathInput.getAttribute('data-path') || '';
+    
+    enviarComandoApp(processoId, 'pesquisar', { termo: termo, caminho: caminhoAtual });
+};
+
+window.fmNavegar = function(processoId, destino) {
+    const input = document.getElementById('fm-path-' + processoId);
+    let atual = input.getAttribute('data-path') || '';
+    
+    let novoCaminho = atual;
+    
+    if (destino === '..') {
+        if (!atual) return; // Já está na raiz
+        const partes = atual.split('/');
+        partes.pop();
+        novoCaminho = partes.join('/');
+    } else {
+        novoCaminho = destino;
+    }
+    
+    enviarComandoApp(processoId, 'listar', { caminho: novoCaminho });
+};
+
+window.fmAtualizar = function(processoId) {
+    const input = document.getElementById('fm-path-' + processoId);
+    const atual = input.getAttribute('data-path') || '';
+    enviarComandoApp(processoId, 'listar', { caminho: atual });
+};
+
+window.fmAbrirItem = function(processoId, tipo, caminho) {
+    if (tipo === 'directory') {
+        fmNavegar(processoId, caminho);
+    } else if (tipo === 'text/plain' || tipo === 'application/json' || tipo.includes('text') || tipo.includes('javascript') || tipo.includes('xml') || tipo.includes('html')) {
+        // Abre arquivos de texto diretamente no Bloco de Notas
+        abrirApp('bloco_notas', { arquivo: caminho });
+    } else {
+        mostrarNotificacao('Arquivo: ' + caminho, 'info');
+    }
+};
+
+function processarResultadoFileManager(processoId, resultado) {
+    const lista = document.getElementById('fm-lista-' + processoId);
+    const pathInput = document.getElementById('fm-path-' + processoId);
+    
+    if (!lista || !resultado.arquivos) return;
+
+    if (resultado.isPesquisa) {
+        pathInput.value = resultado.caminhoAtual;
+    } else {
+        pathInput.value = '/' + (resultado.caminhoAtual || '');
+        pathInput.setAttribute('data-path', resultado.caminhoAtual);
+    }
+
+    if (resultado.arquivos.length === 0) {
+        lista.innerHTML = '<div style="grid-column:1/-1; text-align:center; color:var(--text-secondary); padding:20px;">' + (resultado.isPesquisa ? 'Nenhum resultado encontrado.' : 'Pasta vazia') + '</div>';
+    } else {
+        lista.innerHTML = resultado.arquivos.map(arq => {
+            const itemHtml =
+                '<div onclick="fmAbrirItem(\\'' + processoId + '\\', \\'' + arq.tipo + '\\', \\'' + arq.caminho + '\\')" ' +
+                'style="display:flex; flex-direction:column; align-items:center; padding:10px; cursor:pointer; border-radius:var(--radius-md); transition:background 0.2s;" ' +
+                'onmouseover="this.style.background=\\'var(--bg-secondary)\\'" onmouseout="this.style.background=\\'transparent\\'">' +
+                    '<div style="font-size:2.5rem; margin-bottom:5px;">' + arq.icone + '</div>' +
+                    '<div style="font-size:0.85rem; text-align:center; word-break:break-word;">' + arq.nome + '</div>';
+
+            if (resultado.isPesquisa && arq.contexto && arq.contexto !== '.') {
+                return itemHtml + '<div style="font-size:0.7rem; color:var(--text-tertiary); text-align:center;">em ' + (arq.contexto || '/') + '</div></div>';
+            }
+
+            return itemHtml + '</div>';
+        }).join('');
+    }
+}
+
+// ============================================
+// APP: BLOCO DE NOTAS
+// ============================================
+window.notas = function(processoId, acao) {
+    const textarea = document.getElementById(\`texto-\${processoId}\`);
+    const status = document.getElementById(\`status-\${processoId}\`);
+    
+    switch(acao) {
+        case 'novo':
+            textarea.value = '';
+            atualizarStatusNotas(processoId);
+            break;
+            
+        case 'salvar':
+            mostrarSeletorArquivo('salvar', (caminho) => {
+                const conteudoBase64 = btoa(unescape(encodeURIComponent(textarea.value)));
+                socket.send(JSON.stringify({
+                    tipo: 'salvar_arquivo',
+                    caminho: caminho,
+                    conteudo: conteudoBase64,
+                    formato: 'text/plain'
+                }));
+            });
+            break;
+            
+        case 'abrir':
+            mostrarSeletorArquivo('abrir', (caminho) => {
+                socket.send(JSON.stringify({
+                    tipo: 'ler_arquivo',
+                    caminho: caminho,
+                    reqId: processoId
+                }));
+            });
+            break;
+            
+        case 'copiar':
+            navigator.clipboard.writeText(textarea.value).then(() => {
+                mostrarNotificacao('Texto copiado!', 'sucesso');
+            });
+            break;
+            
+        case 'colar':
+            navigator.clipboard.readText().then(texto => {
+                textarea.value += texto;
+                atualizarStatusNotas(processoId);
+            });
+            break;
+    }
+    
+    // Atualiza status ao digitar
+    textarea.addEventListener('input', () => atualizarStatusNotas(processoId));
+};
+
+function atualizarStatusNotas(processoId) {
+    const textarea = document.getElementById(\`texto-\${processoId}\`);
+    const status = document.getElementById(\`status-\${processoId}\`);
+    
+    if (textarea && status) {
+        const linhas = textarea.value.split('\\n').length;
+        const palavras = textarea.value.trim().split(/\\s+/).filter(p => p).length;
+        status.textContent = \`Linhas: \${linhas} | Palavras: \${palavras} | Caracteres: \${textarea.value.length}\`;
+    }
+}
+
+// Novo Seletor de Arquivos Unificado (Estilo File Manager)
+function mostrarSeletorArquivo(modo, callback) {
+    const seletorId = 'seletor-' + Date.now();
+    const titulo = modo === 'abrir' ? '📂 Abrir Arquivo' : '💾 Salvar Arquivo';
+    
+    const janela = document.createElement('div');
+    janela.className = 'janela';
+    janela.id = seletorId;
+    janela.style.width = '500px';
+    janela.style.height = '400px';
+    janela.style.left = 'calc(50% - 250px)';
+    janela.style.top = 'calc(50% - 200px)';
+    janela.style.zIndex = proximaZIndex++;
+    
+    // HTML Estrutural do Seletor
+    janela.innerHTML = 
+        '<div class="barra-titulo">' +
+            '<div class="window-title">' + titulo + '</div>' +
+            '<div class="window-controls">' +
+                '<span class="window-control close" onclick="document.getElementById(\\'' + seletorId + '\\').remove()"></span>' +
+            '</div>' +
+        '</div>' +
+        '<div class="conteudo" style="display:flex; flex-direction:column; height:calc(100% - 45px); background:var(--bg-primary);">' +
+            '<div style="padding:10px; background:var(--bg-tertiary); border-bottom:1px solid var(--border-light); display:flex; gap:10px; align-items:center;">' +
+                '<button id="btn-voltar-' + seletorId + '" style="cursor:pointer; padding:5px 10px; border-radius:4px; border:1px solid var(--border-light);">⬆️</button>' +
+                '<input type="text" id="path-' + seletorId + '" value="" readonly style="flex:1; padding:5px; border-radius:4px; border:1px solid var(--border-light); background:var(--bg-secondary); color:var(--text-primary);">' +
+            '</div>' +
+            '<div id="lista-' + seletorId + '" style="flex:1; overflow-y:auto; padding:10px; display:grid; grid-template-columns:repeat(auto-fill, minmax(90px, 1fr)); gap:10px; align-content:start;">' +
+                'Carregando...' +
+            '</div>' +
+            '<div style="padding:15px; background:var(--bg-tertiary); border-top:1px solid var(--border-light); display:flex; gap:10px; align-items:center;">' +
+                '<span style="font-size:0.9em;">Nome:</span>' +
+                '<input type="text" id="input-nome-' + seletorId + '" value="' + (modo === 'salvar' ? 'nota.txt' : '') + '" style="flex:1; padding:6px; border:1px solid var(--border-light); border-radius:4px;">' +
+                '<button id="btn-acao-' + seletorId + '" style="padding:6px 15px; background:var(--accent); color:white; border:none; border-radius:4px; cursor:pointer;">' +
+                    (modo === 'abrir' ? 'Abrir' : 'Salvar') +
+                '</button>' +
+                '<button onclick="document.getElementById(\\'' + seletorId + '\\').remove()" style="padding:6px 15px; background:var(--bg-secondary); border:1px solid var(--border-light); border-radius:4px; cursor:pointer;">Cancelar</button>' +
+            '</div>' +
+        '</div>';
+    
+    document.getElementById('area-apps').appendChild(janela);
+    tornarArrastavel(janela);
+    
+    // Lógica de Navegação
+    const navegar = (caminho) => {
+        socket.send(JSON.stringify({
+            tipo: 'listar_arquivos',
+            pasta: caminho,
+            reqId: seletorId
+        }));
+    };
+    
+    // Callback para atualizar a lista
+    seletorCallbacks.set(seletorId, (dados) => {
+        const lista = document.getElementById('lista-' + seletorId);
+        const pathInput = document.getElementById('path-' + seletorId);
+        const btnVoltar = document.getElementById('btn-voltar-' + seletorId);
+        
+        const caminhoAtual = dados.caminho || '';
+        pathInput.value = '/' + caminhoAtual;
+        
+        // Configura botão voltar
+        btnVoltar.onclick = () => {
+            if (!caminhoAtual) return;
+            const partes = caminhoAtual.split('/');
+            partes.pop();
+            navegar(partes.join('/'));
+        };
+        
+        // Filtra para mostrar apenas os filhos diretos do diretório atual
+        const arquivosFiltrados = dados.arquivos.filter(arq => {
+            const caminhoRelativo = arq.caminho_relativo;
+            // Obtém o diretório pai do item, ou uma string vazia se estiver na raiz
+            const dirPai = caminhoRelativo.includes('/') ? caminhoRelativo.substring(0, caminhoRelativo.lastIndexOf('/')) : '';
+            return dirPai === caminhoAtual;
+        });
+        
+        if (arquivosFiltrados.length === 0) {
+            lista.innerHTML = '<div style="grid-column:1/-1; text-align:center; color:var(--text-secondary); padding:20px;">Pasta vazia</div>';
+        } else {
+            lista.innerHTML = arquivosFiltrados.map((arq, index) => {
+                const isDir = arq.tipo === 'directory';
+                const icon = isDir ? '📁' : '📄';
+                
+                return (
+                    '<div id="item-' + seletorId + '-' + index + '"' +
+                        ' style="display:flex; flex-direction:column; align-items:center; padding:10px; cursor:pointer; border-radius:var(--radius-md); transition:background 0.2s;"' + 
+                        ' onmouseover="this.style.background=\\'var(--bg-secondary)\\'" onmouseout="this.style.background=\\'transparent\\'">' +
+                        '<div style="font-size:2rem; margin-bottom:5px;">' + icon + '</div>' +
+                        '<div style="font-size:0.8rem; text-align:center; word-break:break-word;">' + arq.nome + '</div>' +
+                    '</div>'
+                );
+            }).join('');
+            
+            // Adiciona listeners seguros (evita problemas com aspas no nome)
+            arquivosFiltrados.forEach((arq, index) => {
+                const item = document.getElementById('item-' + seletorId + '-' + index);
+                if (arq.tipo === 'directory') {
+                    item.onclick = () => navegar(arq.caminho_relativo);
+                } else {
+                    item.onclick = () => {
+                        document.getElementById('input-nome-' + seletorId).value = arq.nome;
+                    };
+                }
+            });
+        }
+    });
+    
+    // Ação Principal (Botão Abrir/Salvar)
+    document.getElementById('btn-acao-' + seletorId).onclick = () => {
+        const pathAtual = document.getElementById('path-' + seletorId).value; // Ex: '/Documentos'
+        const nomeArquivo = document.getElementById('input-nome-' + seletorId).value;
+        
+        if (!nomeArquivo) {
+            mostrarNotificacao('Digite um nome de arquivo', 'erro');
+            return;
+        }
+        
+        // Remove a barra inicial para a lógica de junção de caminho
+        let basePath = pathAtual.startsWith('/') ? pathAtual.substring(1) : pathAtual;
+        
+        const caminhoCompleto = basePath ? basePath + '/' + nomeArquivo : nomeArquivo;
+        callback(caminhoCompleto);
+        document.getElementById(seletorId).remove();
+        seletorCallbacks.delete(seletorId);
+    };
+    
+    // Inicia na raiz ou Documentos
+    navegar('Documentos');
+}
+
+// ============================================
+// APP: TERMINAL
+// ============================================
+window.term = function(processoId, comando, inputElement) {
+    enviarComandoApp(processoId, comando, {
+        estado: processosAbertos.get(processoId)?.estado
+    });
+    
+    // Limpa input
+    inputElement.value = '';
+};
+
+function processarResultadoTerminal(processoId, resultado) {
+    const terminal = document.getElementById(\`conteudo-\${processoId}\`);
+    if (!terminal) return;
+    
+    const output = terminal.querySelector('.terminal-output');
+    const input = terminal.querySelector('input');
+    
+    if (resultado.clear) {
+        output.innerHTML = 'WebOS Terminal [Versão 1.0]<br>(c) 2026 WebOS Corp. Todos os direitos reservados.<br><br>';
+        return;
+    }
+    
+    if (resultado.output !== undefined) {
+        // Adiciona comando anterior
+        const ultimaLinha = output.innerHTML.split('<br>').pop();
+        if (!ultimaLinha.includes('demo@webos')) {
+            output.innerHTML += \`<div><span style="color:#81c784;">demo@webos:~$</span> \${input?.value || ''}</div>\`;
+        }
+        
+        // Adiciona resultado
+        output.innerHTML += \`<div>\${resultado.output}</div>\`;
+    }
+    
+    // Atualiza estado
+    const processo = processosAbertos.get(processoId);
+    if (processo) {
+        processo.estado = resultado;
+    }
+    
+    // Scroll para o final
+    output.scrollTop = output.scrollHeight;
+}
+
+// ============================================
+// APP: NAVEGADOR
+// ============================================
+window.navegar = function(processoId) {
+    const url = document.getElementById(\`url-\${processoId}\`).value;
+    const frame = document.getElementById(\`frame-\${processoId}\`);
+    
+    // Garante que a URL tenha protocolo
+    let urlFinal = url;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        urlFinal = 'https://' + url;
+    }
+    
+    frame.src = urlFinal;
+};
+
+// ============================================
+// APP: APP STORE
+// ============================================
+window.buscarApps = function(processoId) {
+    const termo = document.getElementById(\`app-busca-\${processoId}\`).value;
+    
+    if (!termo) {
+        // Lista todos os apps disponíveis
+        enviarComandoApp(processoId, 'listar');
+    } else {
+        // Busca por termo
+        enviarComandoApp(processoId, 'buscar_apps', { termo });
+    }
+};
+
+function processarResultadoAppStore(processoId, resultado) {
+    const container = document.getElementById(\`lista-apps-store-\${processoId}\`);
+    if (!container) return;
+    
+    if (resultado.apps) {
+        container.innerHTML = resultado.apps.map(function(app) {
+            return (
+                '<div class="app-item">' +
+                    '<div class="app-item-info">' +
+                        '<strong>' + app.nome + '</strong>' +
+                        '<span>v' + app.versao + '</span>' +
+                    '</div>' +
+                    '<button onclick="instalarApp(\\'' + processoId + '\\', \\'' + app.id + '\\')">' +
+                        '📥 Instalar' +
+                    '</button>' +
+                '</div>'
+            );
+        }).join('');
+    }
+    
+    if (resultado.apps_encontrados) {
+        if (resultado.apps_encontrados.length === 0) {
+            container.innerHTML = '<p style="text-align:center; padding:20px; color:#888;">Nenhum app encontrado.</p>';
+        } else {
+            container.innerHTML = resultado.apps_encontrados.map(function(app) {
+                var descHtml = app.descricao ? '<span style="color:#888;">' + app.descricao.substring(0, 50) + '...</span>' : '';
+                return (
+                    '<div class="app-item">' +
+                        '<div class="app-item-info">' +
+                            '<strong>' + app.nome + '</strong>' +
+                            '<span>v' + app.versao + '</span>' +
+                            descHtml +
+                        '</div>' +
+                        '<button onclick="instalarApp(\\'' + processoId + '\\', \\'' + app.id + '\\')">' +
+                            '📥 Instalar' +
+                        '</button>' +
+                    '</div>'
+                );
+            }).join('');
+        }
+    }
+}
+
+window.instalarApp = function(processoId, appId) {
+    socket.send(JSON.stringify({
+        tipo: 'instalar_app',
+        appId
+    }));
+    
+    // Feedback visual
+    mostrarNotificacao(\`Instalando \${appId}...\`, 'info');
+};
+
+// ============================================
+// APP: CRYPTO TRACKER
+// ============================================
+window.atualizarCrypto = async function(processoId) {
+    const resultado = await new Promise(resolve => {
+        enviarComandoApp(processoId, 'atualizar', {}, resolve);
+    });
+    
+    const container = document.getElementById(\`crypto-list-\${processoId}\`);
+    if (!container) return;
+    
+    if (resultado.erro) {
+        container.innerHTML = \`<p style="color: #e94560;">Erro: \${resultado.erro}</p>\`;
+        return;
+    }
+    
+    if (resultado.precos) {
+        const cryptos = {
+            bitcoin: { nome: 'Bitcoin', icone: '₿' },
+            ethereum: { nome: 'Ethereum', icone: 'Ξ' },
+            solana: { nome: 'Solana', icone: '◎' },
+            dogecoin: { nome: 'Dogecoin', icone: 'Ð' }
+        };
+        
+        container.innerHTML = Object.entries(resultado.precos).map(([id, precos]) => \`
+            <div style="margin-bottom: 15px; padding: 10px; background: #16213e; border-radius: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-size: 1.2em;">\${cryptos[id]?.icone || '🪙'} \${cryptos[id]?.nome || id}</span>
+                    <span style="font-weight: bold;">$\${precos.usd.toLocaleString()}</span>
+                </div>
+                <div style="color: #888; margin-top: 5px;">R$ \${precos.brl.toLocaleString()}</div>
+            </div>
+        \`).join('');
+    }
+};
+
+// ============================================
+// APP: CLIMA
+// ============================================
+window.buscarClima = async function(processoId) {
+    const cidade = document.getElementById(\`cidade-\${processoId}\`).value;
+    if (!cidade) return;
+    
+    const resultado = await new Promise(resolve => {
+        enviarComandoApp(processoId, 'buscar', { cidade }, resolve);
+    });
+    
+    const container = document.getElementById(\`resultado-clima-\${processoId}\`);
+    if (!container) return;
+    
+    if (resultado.erro) {
+        container.innerHTML = \`<p style="color: #ff6b6b;">Erro: \${resultado.erro}</p>\`;
+        return;
+    }
+    
+    if (resultado.clima) {
+        const { temperatura, windspeed, weathercode } = resultado.clima;
+        const { name, country } = resultado.local;
+        
+        // Códigos de tempo da Open-Meteo
+        const weatherCodes = {
+            0: { icon: '☀️', desc: 'Céu limpo' },
+            1: { icon: '🌤️', desc: 'Parcialmente nublado' },
+            2: { icon: '⛅', desc: 'Parcialmente nublado' },
+            3: { icon: '☁️', desc: 'Nublado' },
+            45: { icon: '🌫️', desc: 'Neblina' },
+            48: { icon: '🌫️', desc: 'Nevoeiro' },
+            51: { icon: '🌧️', desc: 'Chuva fraca' },
+            61: { icon: '🌧️', desc: 'Chuva' },
+            80: { icon: '🌦️', desc: 'Pancadas de chuva' },
+            95: { icon: '⛈️', desc: 'Tempestade' }
+        };
+        
+        const weather = weatherCodes[weathercode] || { icon: '🌡️', desc: 'Desconhecido' };
+        
+        container.innerHTML = \`
+            <div style="font-size: 4em; margin-bottom: 10px;">\${weather.icon}</div>
+            <div style="font-size: 3em; font-weight: bold;">\${temperatura}°C</div>
+            <div style="font-size: 1.5em; margin: 10px 0;">\${name}, \${country}</div>
+            <div style="color: #ddd;">\${weather.desc}</div>
+            <div style="margin-top: 20px;">💨 Vento: \${windspeed} km/h</div>
+        \`;
+    }
+};
+
+// ============================================
+// APP: WIKIPEDIA
+// ============================================
+window.buscarWiki = async function(processoId) {
+    const termo = document.getElementById(\`wiki-busca-\${processoId}\`).value;
+    if (!termo) return;
+    
+    const resultado = await new Promise(resolve => {
+        enviarComandoApp(processoId, 'buscar', { termo }, resolve);
+    });
+    
+    const container = document.getElementById(\`wiki-conteudo-\${processoId}\`);
+    if (!container) return;
+    
+    if (resultado.erro) {
+        container.innerHTML = \`<p style="color: #e94560;">Erro: \${resultado.erro}</p>\`;
+        return;
+    }
+    
+    if (resultado.busca && resultado.busca.length > 0) {
+        container.innerHTML = resultado.busca.map(item => \`
+            <div onclick="lerWiki('\${processoId}', \${item.pageid})" style="padding: 10px; margin: 5px 0; background: #f9f9f9; cursor: pointer; border-radius: 5px;">
+                <h4>\${item.title}</h4>
+                <p style="color: #666; font-size: 0.9em;">\${item.snippet.replace(/<[^>]*>/g, '')}...</p>
+            </div>
+        \`).join('');
+    } else {
+        container.innerHTML = '<p>Nenhum resultado encontrado.</p>';
+    }
+};
+
+window.lerWiki = async function(processoId, pageid) {
+    const resultado = await new Promise(resolve => {
+        enviarComandoApp(processoId, 'ler', { pageid }, resolve);
+    });
+    
+    const container = document.getElementById(\`wiki-conteudo-\${processoId}\`);
+    if (!container) return;
+    
+    if (resultado.conteudo) {
+        container.innerHTML = \`
+            <h2>\${resultado.titulo}</h2>
+            <div style="font-size: 0.9em; line-height: 1.6;">
+                \${resultado.conteudo}
+            </div>
+            <button onclick="buscarWiki('\${processoId}')" style="margin-top: 20px;">← Voltar</button>
+        \`;
+    }
+};
+
+// ============================================
+// APP: TECH NEWS (HACKER NEWS)
+// ============================================
+window.atualizarNews = async function(processoId) {
+    const resultado = await new Promise(resolve => {
+        enviarComandoApp(processoId, 'listar', {}, resolve);
+    });
+    
+    const container = document.getElementById(\`news-lista-\${processoId}\`);
+    if (!container) return;
+    
+    if (resultado.noticias) {
+        container.innerHTML = resultado.noticias.map((item, index) => \`
+            <div style="margin-bottom: 15px; padding: 10px; background: #ffffff; border-radius: 5px; border-left: 3px solid #ff6600;">
+                <div style="display: flex; gap: 10px;">
+                    <span style="color: #ff6600; font-weight: bold;">\${index + 1}.</span>
+                    <div>
+                        <a href="\${item.url || '#'}" target="_blank" style="color: #000; text-decoration: none; font-weight: bold;">\${item.title}</a>
+                        <div style="font-size: 0.8em; color: #666; margin-top: 5px;">
+                            \${item.points} pontos | por \${item.author} | \${item.created_at ? new Date(item.created_at).toLocaleDateString() : ''}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        \`).join('');
+    }
+};
+
+// ============================================
+// APP: GAME CENTER
+// ============================================
+window.buscarJogos = async function(processoId) {
+    const termo = document.getElementById(\`game-busca-\${processoId}\`).value;
+    if (!termo) return;
+    
+    const container = document.getElementById(\`game-resultados-\${processoId}\`);
+    container.innerHTML = '<p style="color: #888;">Buscando jogos no Internet Archive...</p>';
+    
+    const resultado = await new Promise(resolve => {
+        enviarComandoApp(processoId, 'buscar_jogos', { termo }, resolve);
+    });
+    
+    if (resultado.jogos && resultado.jogos.length > 0) {
+        container.innerHTML = resultado.jogos.map(jogo => \`
+            <div class="game-card">
+                <div class="game-info">
+                    <h4>\${jogo.title}</h4>
+                    <span>Sistema: \${jogo.system.toUpperCase()}</span>
+                </div>
+                <button class="play-button" onclick="jogarGame('\${processoId}', '\${jogo.system}', '\${jogo.romUrl}')">
+                    ▶️ Jogar
+                </button>
+            </div>
+        \`).join('');
+    } else {
+        container.innerHTML = \`
+            <p style="text-align:center; color:#888;">Nenhum jogo encontrado. Tente outro termo.</p>
+            <p style="text-align:center; font-size:0.8em; color:#666;">Dica: Busque por "Super Mario", "Zelda", "Metroid", etc.</p>
+        \`;
+    }
+};
+
+window.carregarJogoLocal = function(processoId) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.sfc,.smc,.nes,.gba,.gbc';
+    
+    input.onchange = (e) => {
+        const file = e.target.files[0];
+        const extension = file.name.split('.').pop().toLowerCase();
+        
+        let sistema = 'snes';
+        if (extension === 'nes') sistema = 'nes';
+        if (extension === 'gba') sistema = 'gba';
+        if (extension === 'gbc') sistema = 'gbc';
+        
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const url = URL.createObjectURL(file);
+            jogarGame(processoId, sistema, url);
+        };
+        reader.readAsArrayBuffer(file);
+    };
+    
+    input.click();
+};
+
+window.jogarGame = function(processoId, sistema, romUrl) {
+    let appNome;
+    switch(sistema) {
+        case 'nes':
+            appNome = 'nes_emulator';
+            break;
+        case 'gba':
+            appNome = 'gba_emulator';
+            break;
+        case 'snes':
+        default:
+            appNome = 'snes_emulator';
+            break;
+    }
+    
+    // Abre o emulador em uma nova janela
+    abrirApp(appNome, { romUrl });
+};
+
+// ============================================
+// APP: ANDROID EMULATOR (APPETIZE)
+// ============================================
+window.buscarApkAppetize = async function(processoId) {
+    const termo = document.getElementById(\`android-busca-\${processoId}\`).value;
+    if (!termo) return;
+    
+    const lista = document.getElementById(\`android-lista-\${processoId}\`);
+    lista.style.display = 'block';
+    lista.innerHTML = '<div style="padding:10px; color:#ccc;">Buscando...</div>';
+    
+    const resultado = await new Promise(resolve => {
+        enviarComandoApp(processoId, 'buscar', { termo }, resolve);
+    });
+    
+    if (resultado.resultados && resultado.resultados.length > 0) {
+        lista.innerHTML = resultado.resultados.map(app => \`
+            <div onclick="rodarApkAppetize('\${processoId}', '\${app.apkUrl}')" style="padding:10px; border-bottom:1px solid #333; cursor:pointer; display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:bold; color:white;">\${app.title}</span>
+                <button style="background:#3ddc84; border:none; border-radius:3px; padding:5px 10px; cursor:pointer;">▶️ Play</button>
+            </div>
+        \`).join('');
+    } else {
+        lista.innerHTML = '<div style="padding:10px; color:#ccc;">Nenhum APK encontrado.</div>';
+    }
+};
+
+window.rodarApkAppetize = async function(processoId, url) {
+    const container = document.getElementById(\`android-container-\${processoId}\`);
+    const lista = document.getElementById(\`android-lista-\${processoId}\`);
+    
+    lista.style.display = 'none'; // Esconde a lista
+    
+    container.innerHTML = '<p style="color:white;">Processando APK na nuvem...</p>';
+    
+    const resultado = await new Promise(resolve => {
+        enviarComandoApp(processoId, 'instalar', { url }, resolve);
+    });
+    
+    if (resultado.erro) {
+        container.innerHTML = \`<div style="text-align:center; color:#ff5f57;"><p>Erro:</p><p>\${resultado.erro}</p></div>\`;
+        return;
+    }
+    
+    if (resultado.publicKey) {
+        container.innerHTML = \`
+            <iframe src="https://appetize.io/embed/\${resultado.publicKey}?device=pixel4&scale=75&autoplay=true&orientation=portrait&deviceColor=black" 
+            width="375px" height="812px" frameborder="0" scrolling="no" 
+            style="border:none; box-shadow: 0 0 20px rgba(0,0,0,0.5);"></iframe>
+            <iframe src="https://appetize.io/embed/\${resultado.publicKey}?device=none&scale=75&autoplay=true&orientation=portrait&xdocMsg=true" 
+            width="100%" height="100%" frameborder="0" scrolling="no" 
+            style="border:none; background: #000;"></iframe>
+        \`;
+    }
+};
+
+// ============================================
+// APP: TASK MANAGER
+// ============================================
+window.atualizarTarefas = function(processoId) {
+    enviarComandoApp(processoId, 'listar');
+};
+
+function processarResultadoTaskManager(processoId, resultado) {
+    const container = document.getElementById(\`lista-tarefas-\${processoId}\`);
+    if (!container) return;
+    
+    if (resultado.processos) {
+        if (resultado.processos.length === 0) {
+            container.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:20px;">Nenhum processo em execução.</td></tr>';
+        } else {
+            container.innerHTML = resultado.processos.map(proc => \`
+                <tr>
+                    <td style="padding:8px;">\${proc.nome}</td>
+                    <td style="padding:8px;">\${proc.pid.substring(0, 8)}</td>
+                    <td style="padding:8px;">\${proc.cpu}</td>
+                    <td style="padding:8px;">\${proc.memoria}</td>
+                    <td style="padding:8px;">
+                        <button class="kill-button" onclick="matarProcesso('\${processoId}', '\${proc.pid}')">Finalizar</button>
+                    </td>
+                </tr>
+            \`).join('');
+        }
+    }
+}
+
+window.matarProcesso = function(processoId, pid) {
+    enviarComandoApp(processoId, 'matar', { pid });
+    setTimeout(() => atualizarTarefas(processoId), 500);
+};
+
+// ============================================
+// APP: CLIPBOARD VIEWER
+// ============================================
+window.atualizarClipboard = function(processoId) {
+    const textarea = document.getElementById(\`clipboard-content-\${processoId}\`);
+    if (textarea) {
+        textarea.value = clipboard || '(vazio)';
+    }
+};
+
+window.limparClipboard = function(processoId) {
+    clipboard = '';
+    atualizarClipboard(processoId);
+};
+
+// ============================================
+// APP: PHOTOPEA
+// ============================================
+window.carregarArquivoPhotopea = function(processoId) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.psd,.png,.jpg,.jpeg,.gif,.bmp,.tiff';
+    
+    input.onchange = (e) => {
+        const file = e.target.files[0];
+        const url = URL.createObjectURL(file);
+        
+        // Tenta enviar para o Photopea via postMessage
+        const iframe = document.getElementById(\`frame-photopea-\${processoId}\`);
+        iframe.contentWindow.postMessage({
+            type: 'open-file',
+            url: url,
+            name: file.name
+        }, '*');
+    };
+    
+    input.click();
+};
+
+// ============================================
+// APP: VS CODE WEB
+// ============================================
+window.buscarRepos = async function(processoId) {
+    const termo = document.getElementById(\`repo-busca-\${processoId}\`).value;
+    if (!termo) return;
+    
+    const resultado = await new Promise(resolve => {
+        enviarComandoApp(processoId, 'buscar_repos', { termo }, resolve);
+    });
+    
+    const lista = document.getElementById(\`repo-lista-\${processoId}\`);
+    if (resultado.repos) {
+        lista.style.display = 'block';
+        lista.innerHTML = resultado.repos.map(repo => \`
+            <div onclick="abrirRepo('\${processoId}', '\${repo.html_url}')" style="padding: 8px; border-bottom: 1px solid #333; cursor: pointer;">
+                <strong>\${repo.full_name}</strong>
+                <div style="font-size: 0.8em; color: #888;">\${repo.description || ''}</div>
+            </div>
+        \`).join('');
+    }
+};
+
+window.abrirRepo = function(processoId, url) {
+    const iframe = document.getElementById(\`frame-vscode-\${processoId}\`);
+    iframe.src = \`https://vscode.dev/github/\${url.replace('https://github.com/', '')}\`;
+    
+    const lista = document.getElementById(\`repo-lista-\${processoId}\`);
+    lista.style.display = 'none';
+};
+
+// ============================================
+// APP: WINDOWS 98 EMULATOR
+// ============================================
+window.carregarDiscoWin98 = function(processoId) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.iso,.img,.bin';
+    
+    input.onchange = (e) => {
+        const file = e.target.files[0];
+        const url = URL.createObjectURL(file);
+        
+        const iframe = document.getElementById(\`frame-win98-\${processoId}\`);
+        iframe.contentWindow.postMessage({
+            type: 'insert-disk',
+            url: url,
+            name: file.name
+        }, '*');
+    };
+    
+    input.click();
+};
+
+window.buscarSoftware = async function(processoId) {
+    const termo = document.getElementById(\`soft-busca-\${processoId}\`).value;
+    if (!termo) return;
+    
+    const resultado = await new Promise(resolve => {
+        enviarComandoApp(processoId, 'buscar_software', { termo }, resolve);
+    });
+    
+    const lista = document.getElementById(\`soft-lista-\${processoId}\`);
+    if (resultado.software) {
+        lista.style.display = 'block';
+        lista.innerHTML = resultado.software.map(soft => \`
+            <div onclick="carregarSoftware('\${processoId}', '\${soft.isoUrl}')" style="padding: 8px; border-bottom: 1px solid #888; cursor: pointer;">
+                <strong>\${soft.title}</strong>
+            </div>
+        \`).join('');
+    }
+};
+
+window.carregarSoftware = function(processoId, isoUrl) {
+    const iframe = document.getElementById(\`frame-win98-\${processoId}\`);
+    iframe.contentWindow.postMessage({
+        type: 'insert-disk',
+        url: isoUrl
+    }, '*');
+    
+    const lista = document.getElementById(\`soft-lista-\${processoId}\`);
+    lista.style.display = 'none';
+};
+
+// ============================================
+// APP: FOTOS
+// ============================================
+function processarResultadoFotos(processoId, resultado) {
+    const galeria = document.getElementById(\`galeria-\${processoId}\`);
+    if (!galeria) return;
+    
+    if (Array.isArray(resultado)) {
+        // Lista de fotos
+        if (resultado.length === 0) {
+            galeria.innerHTML = '<p style="color: #888; text-align: center; padding: 20px;">Nenhuma foto encontrada.</p>';
+        } else {
+            galeria.innerHTML = resultado.map(foto => \`
+                <div class="miniatura" onclick="verFoto('\${processoId}', '\${foto.nome}')">
+                    \${foto.nome}
+                </div>
+            \`).join('');
+        }
+    } else if (resultado.dados) {
+        // Visualização de foto
+        galeria.innerHTML = \`
+            <div style="position: relative; height: 100%;">
+                <img src="\${resultado.dados}" style="max-width: 100%; max-height: 100%; object-fit: contain;">
+                <button onclick="voltarFotos('\${processoId}')" style="position: absolute; top: 10px; left: 10px;">← Voltar</button>
+            </div>
+        \`;
+    }
+}
+
+window.verFoto = function(processoId, nome) {
+    enviarComandoApp(processoId, 'ver', { foto: nome });
+};
+
+window.voltarFotos = function(processoId) {
+    enviarComandoApp(processoId, 'listar');
+};
+
+// ============================================
+// UTILITÁRIOS
+// ============================================
+function mostrarNotificacao(mensagem, tipo = 'info') {
+    const container = document.getElementById('notificacoes');
+    const notificacao = document.createElement('div');
+    notificacao.className = \`notificacao \${tipo}\`;
+    notificacao.textContent = mensagem;
+    
+    container.appendChild(notificacao);
+    
+    setTimeout(() => {
+        notificacao.style.animation = 'notificationSlide 0.3s reverse';
+        setTimeout(() => notificacao.remove(), 300);
+    }, 3000);
+}
+
+function atualizarListaApps(apps) {
+    console.log('Apps disponíveis:', apps);
+}
+
+function mostrarSobre() {
+    mostrarNotificacao(
+        'WebOS v1.0\\nUm sistema operacional web completo\\nDesenvolvido com Node.js e WebSocket',
+        'info'
+    );
+}
+
+// ============================================
+// TEMA E RELÓGIO
+// ============================================
+function alternarTema(tema) {
+    document.documentElement.setAttribute('data-theme', tema);
+    localStorage.setItem('webos-theme', tema);
+    
+    // Atualiza botões ativos
+    document.querySelectorAll('.theme-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.theme === tema) {
+            btn.classList.add('active');
+        }
+    });
+}
+
+function atualizarRelogio() {
+    const agora = new Date();
+    const horas = agora.getHours().toString().padStart(2, '0');
+    const minutos = agora.getMinutes().toString().padStart(2, '0');
+    document.getElementById('relogio-menu').textContent = \`\${horas}:\${minutos}\`;
+}
+
+// ============================================
+// INICIALIZAÇÃO
+// ============================================
+document.addEventListener('DOMContentLoaded', () => {
+    // Validação crucial: Verifica se o arquivo foi aberto via 'file://' em vez de ser servido por HTTP.
+    // Este é um erro comum do usuário.
+    if (window.location.protocol === 'file:') {
+        var html = '<div style="font-family: sans-serif; padding: 40px; background: #fff3f3; border: 2px solid #ffc0c0; color: #a00; height: 100vh; display: flex; justify-content: center; align-items: center;">' +
+            '<div style="max-width: 800px;">' +
+                '<h1 style="font-size: 2rem; margin-bottom: 20px;">❌ Erro de Acesso</h1>' +
+                '<p style="font-size: 1.2rem; line-height: 1.6;"><strong>Você não pode abrir este arquivo diretamente no navegador.</strong> Este é um arquivo de servidor.</p>' +
+                '<p style="font-size: 1.2rem; line-height: 1.6; margin-top: 20px;">Para executar o WebOS, siga estes passos:</p>' +
+                '<ol style="margin-left: 20px; margin-top: 10px; font-size: 1.2rem; line-height: 1.6;">' +
+                    '<li>Abra o terminal (prompt de comando) na pasta onde o arquivo do servidor está salvo.</li>' +
+                    '<li>Execute o comando: <code style="background: #eee; padding: 3px 6px; border-radius: 4px; color: #333;">node deepseek_javascript_20260307_5ccd66.js</code></li>' +
+                    '<li>Espere o servidor iniciar e mostrar a mensagem "🚀 WEBOS SERVER RODANDO".</li>' +
+                    '<li>Abra o seu navegador (Chrome, Firefox, etc).</li>' +
+                    '<li>Acesse o endereço: <a href="http://localhost:8080" style="color: #007bff;">http://localhost:8080</a></li>' +
+                '</ol>' +
+            '</div>' +
+        '</div>';
+        document.body.innerHTML = html;
+        return; // Para a execução do script
+    }
+
+    // Desabilita o botão de login até a conexão ser estabelecida
+    const loginButton = document.getElementById('login-button');
+    loginButton.disabled = true;
+    loginButton.textContent = 'Conectando...';
+
+    // Conecta ao servidor
+    conectarWebSocket();
+    
+    // Inicializa relógio
+    atualizarRelogio();
+    setInterval(atualizarRelogio, 1000);
+    
+    // Carrega tema salvo
+    const temaSalvo = localStorage.getItem('webos-theme') || 'light';
+    alternarTema(temaSalvo);
+    
+    // Event listeners para tema
+    document.querySelectorAll('.theme-btn').forEach(btn => {
+        btn.addEventListener('click', () => alternarTema(btn.dataset.theme));
+    });
+    
+    // Login com Enter
+    document.getElementById('senha').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') fazerLogin();
+    });
+    
+    // Lista apps disponíveis
+    setTimeout(() => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ tipo: 'listar_apps' }));
+        }
+    }, 1000);
+});
+
+    </script>
+</body>
+</html>
+`;
