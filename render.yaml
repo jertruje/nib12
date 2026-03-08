@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: webos-server
+    runtime: node
+    repo: https://github.com/seu-usuario/webos-server
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 18.17.0
