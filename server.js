@@ -3105,11 +3105,11 @@ const clienteHTML = `
 
         <!-- Dock (macOS style) -->
         <div id="dock">
-<button onclick="abrirPlayStore()">▶️ Play Store</button>
+<button onclick="abrirPlayStore()">▶️</button>
 
-<div id="playstore" style="display:none; position:fixed; top:5%; left:5%; width:90%; height:90%; background:#000; z-index:9999;">
+<div id="playstore" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:9999;">
 
-<button onclick="fecharPlayStore()" style="position:absolute; top:5px; right:10px; font-size:20px; background:red; color:white; border:none; cursor:pointer;">
+<button onclick="fecharPlayStore()" style="position:absolute; top:10px; right:15px; font-size:25px; background:red; color:white; border:none; cursor:pointer; z-index:10000;">
 ✖
 </button>
 
