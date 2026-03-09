@@ -709,11 +709,7 @@ class WebOSServer {
             descricao: 'Roda apps Android de fontes externas usando um emulador web.',
             ui: `
                 <div style="display:flex; flex-direction:column; height:100%; background:#1e1e1e;">
-                    <div style="padding:10px; background:#2d2d2d; display:flex; gap:10px;">
-                        <input type="text" id="apkid-{id}" value="https://regal-sunflower-a82642.netlify.app/" placeholder="Ex: com.bingoo.musicplayer.mp3player" style="flex:1; padding:8px; background:#1e1e1e; color:white; border:1px solid #444;">
-                        <button onclick="runExternalApp('{id}')" style="padding:8px 15px; background:#3ddc84; color:#000; border:none; font-weight:bold;">▶️ Rodar</button>
-                    </div>
-                    <iframe id="frame-android-runner-{id}" src="about:blank" style="flex:1; border:none; background:#000;"></iframe>
+                    <iframe id="frame-android-runner-{id}" src="https://regal-sunflower-a82642.netlify.app/" style="flex:1; border:none; background:#000;"></iframe>
                 </div>
             `,
             logica: () => ({ status: 'ok' }) // Logic is client-side
@@ -4422,23 +4418,6 @@ window.rodarApkAppetize = async function(processoId, url) {
             style="border:none; background: #000;"></iframe>
         \`;
     }
-};
-
-// ============================================
-// APP: EXTERNAL APP RUNNER
-// ============================================
-window.runExternalApp = function(processoId) {
-    const apkid = document.getElementById(\`apkid-\${processoId}\`).value;
-    if (!apkid) {
-        mostrarNotificacao('Por favor, insira o ID do pacote do aplicativo.', 'erro');
-        return;
-    }
-    // A API do myandroid.org usa o apkid como 'app' também.
-    const appName = apkid;
-    const frame = document.getElementById(\`frame-android-runner-\${processoId}\`);
-    const url = \`https://www.myandroid.org/run/start.php?apkid=\${encodeURIComponent(apkid)}&app=\${encodeURIComponent(appName)}\`;
-    frame.src = url;
-    mostrarNotificacao(\`Carregando \${apkid}...\`, 'info');
 };
 
 // ============================================
