@@ -665,17 +665,48 @@ class WebOSServer {
             `,
             logica: (comando, args) => this.gameCenterLogic(comando, args)
         });
-        // App Play Store (versão simples com iframe)
-this.appRepository.set('play_store', {
-    nome: 'Play Store',
+// App Play Store Custom - Abre dentro do WebOS
+this.appRepository.set('custom_play_store', {
+    nome: 'Play Store Custom',
     versao: '1.0',
     tipo: 'web',
     icone: '▶️',
-    descricao: 'Play Store personalizada',
-    ui: '<iframe src="https://regal-sunflower-a82642.netlify.app/" style="width:100%; height:100%; border:none;"></iframe>',
-    logica: () => ({ status: 'ok' })
-});
-        
+    descricao: 'Play Store personalizada rodando dentro do WebOS',
+    ui: `
+        <div style="width:100%; height:100%; display:flex; flex-direction:column; background:#1a1a1a;">
+            <div style="background:#2d2d2d; padding:10px 15px; border-bottom:1px solid #444; display:flex; align-items:center; gap:10px;">
+                <span style="font-size:1.5rem;">▶️</span>
+                <span style="color:white; font-weight:500; flex:1;">Play Store Custom</span>
+                <button onclick="recarregarIframe('{id}')" style="background:#4CAF50; color:white; border:none; padding:5px 15px; border-radius:3px; cursor:pointer;">↻ Recarregar</button>
+            </div>
+            <div style="flex:1; position:relative; background:white;" id="iframe-container-{id}">
+                <iframe 
+                    id="iframe-{id}"
+                    src="https://regal-sunflower-a82642.netlify.app/" 
+                    style="width:100%; height:100%; border:none;"
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-top-navigation"
+                    allow="accelerometer; camera; encrypted-media; geolocation; gyroscope; microphone; midi; payment; usb; xr-spatial-tracking"
+                    allowfullscreen="true"
+                    webkitallowfullscreen="true"
+                    mozallowfullscreen="true"
+                    loading="lazy">
+                </iframe>
+                <div id="iframe-error-{id}" style="display:none; position:absolute; top:0; left:0; right:0; bottom:0; background:#f5f5f5; flex-direction:column; align-items:center; justify-content:center; padding:20px; text-align:center;">
+                    <span style="font-size:3rem; margin-bottom:20px;">⚠️</span>
+                    <h3 style="color:#333; margin-bottom:10px;">Não foi possível carregar o site</h3>
+                    <p style="color:#666; margin-bottom:20px; max-width:400px;">O site não permite ser aberto dentro de iframes por questões de segurança.</p>
+                    <button onclick="abrirNoNavegador('{id}')" style="background:#4CAF50; color:white; border:none; padding:10px 30px; border-radius:5px; cursor:pointer; font-size:1rem;">▶️ Abrir no Navegador WebOS</button>
+                </div>
+            </div>
+        </div>
+    `,
+    logica: (comando, args) => {
+        if (comando === 'verificar_iframe') {
+            return { url: 'https://regal-sunflower-a82642.netlify.app/' };
+        }
+        return { status: 'ok' };
+    }
+});     
         // App Android Emulator (Appetize.io)
         this.apps.set('android_emulator', {
             nome: 'Android Emulator',
@@ -3114,8 +3145,8 @@ const clienteHTML = `
 
         <!-- Dock (macOS style) -->
         <div id="dock">
-            <div class="dock-icon" data-tooltip="Play Store Custom" onclick="abrirApp('custom_play_store')">▶️</div>
-            <div class="dock-icon" data-tooltip="Calculadora" onclick="abrirApp('calculadora')">🧮</div>
+<!-- Dentro da div id="dock" -->
+<div class="dock-icon" data-tooltip="Play Store" onclick="abrirApp('custom_play_store')">▶️</div>            <div class="dock-icon" data-tooltip="Calculadora" onclick="abrirApp('calculadora')">🧮</div>
             <div class="dock-icon" data-tooltip="Arquivos" onclick="abrirApp('file_manager')">📁</div>
             <div class="dock-icon" data-tooltip="Bloco de Notas" onclick="abrirApp('bloco_notas')">📝</div>
             <div class="dock-icon" data-tooltip="Fotos" onclick="abrirApp('fotos')">🖼️</div>
@@ -4719,7 +4750,87 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }, 1000);
 });
+// Função para verificar se o iframe carregou corretamente
+window.verificarIframe = function(processoId) {
+    const iframe = document.getElementById(`iframe-${processoId}`);
+    const errorDiv = document.getElementById(`iframe-error-${processoId}`);
+    
+    // Tenta detectar erro no iframe
+    try {
+        // Se conseguir acessar o conteúdo, está ok
+        if (iframe.contentWindow.location.href) {
+            errorDiv.style.display = 'none';
+        }
+    } catch (e) {
+        // Se der erro de segurança, mostra a mensagem
+        console.log('Erro ao acessar iframe:', e);
+        errorDiv.style.display = 'flex';
+        iframe.style.display = 'none';
+    }
+};
 
+// Função para recarregar o iframe
+window.recarregarIframe = function(processoId) {
+    const iframe = document.getElementById(`iframe-${processoId}`);
+    const errorDiv = document.getElementById(`iframe-error-${processoId}`);
+    
+    iframe.style.display = 'block';
+    errorDiv.style.display = 'none';
+    iframe.src = 'https://regal-sunflower-a82642.netlify.app/';
+    
+    // Verifica após 2 segundos
+    setTimeout(() => verificarIframe(processoId), 2000);
+};
+
+// Função para abrir no navegador interno do WebOS
+window.abrirNoNavegador = function(processoId) {
+    // Fecha o app atual
+    fecharJanela(processoId);
+    
+    // Abre o link no navegador interno do WebOS
+    setTimeout(() => {
+        abrirApp('navegador');
+        // Espera o navegador abrir e então navega para a URL
+        setTimeout(() => {
+            // Encontra o processo do navegador
+            for (let [pid, proc] of processosAbertos) {
+                if (proc.app === 'Navegador Google') {
+                    const urlInput = document.getElementById(`url-${pid}`);
+                    const goButton = document.querySelector(`#janela-${pid} button[onclick*="navegar"]`);
+                    
+                    if (urlInput) {
+                        urlInput.value = 'https://regal-sunflower-a82642.netlify.app/';
+                        if (goButton) {
+                            goButton.click();
+                        } else {
+                            // Se não encontrar o botão, tenta chamar a função diretamente
+                            window.navegar(pid);
+                        }
+                    }
+                    break;
+                }
+            }
+        }, 500);
+    }, 100);
+};
+
+// Sobrescreve a função de abertura do app para verificar o iframe
+const abrirAppOriginal = window.abrirApp;
+window.abrirApp = function(appNome, params = {}) {
+    abrirAppOriginal(appNome, params);
+    
+    if (appNome === 'custom_play_store') {
+        // Aguarda a janela abrir e verifica o iframe
+        setTimeout(() => {
+            for (let [pid, proc] of processosAbertos) {
+                if (proc.app === 'Play Store Custom') {
+                    setTimeout(() => verificarIframe(pid), 2000);
+                    break;
+                }
+            }
+        }, 500);
+    }
+};
     </script>
 </body>
 </html>
