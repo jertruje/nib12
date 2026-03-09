@@ -1,4 +1,3 @@
-
 // server.js - Servidor principal do WebOS
 const WebSocket = require('ws');
 const http = require('http');
@@ -666,36 +665,14 @@ class WebOSServer {
             `,
             logica: (comando, args) => this.gameCenterLogic(comando, args)
         });
-// App Play Store Customizada
-this.appRepository.set('custom_play_store', {
-    nome: 'Play Store Custom',
+        // App Play Store (versão simples com iframe)
+this.appRepository.set('play_store', {
+    nome: 'Play Store',
     versao: '1.0',
     tipo: 'web',
     icone: '▶️',
-    descricao: 'Play Store personalizada com links úteis',
-    ui: `
-        <div style="width:100%; height:100%; display:flex; flex-direction:column;">
-            <div style="background:#2d2d2d; padding:15px; border-bottom:1px solid #444; display:flex; gap:10px; align-items:center;">
-                <span style="font-size:2rem;">▶️</span>
-                <h3 style="color:white; margin:0;">Play Store Custom</h3>
-            </div>
-            <div style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#1a1a1a; padding:20px;">
-                <div style="max-width:800px; width:100%; background:#2d2d2d; border-radius:10px; padding:30px; text-align:center;">
-                    <span style="font-size:4rem; display:block; margin-bottom:20px;">🎮</span>
-                    <h2 style="color:white; margin-bottom:20px;">Loja de Apps Customizada</h2>
-                    <p style="color:#aaa; margin-bottom:30px;">Clique no botão abaixo para acessar a loja personalizada</p>
-                    <a href="https://regal-sunflower-a82642.netlify.app/" target="_blank" 
-                       style="display:inline-block; background:#4CAF50; color:white; padding:15px 40px; 
-                              border-radius:5px; text-decoration:none; font-size:1.2rem; font-weight:bold;
-                              transition:transform 0.2s; box-shadow:0 4px 15px rgba(76,175,80,0.3);"
-                       onmouseover="this.style.transform='scale(1.05)'" 
-                       onmouseout="this.style.transform='scale(1)'">
-                        ▶️ ABRIR PLAY STORE
-                    </a>
-                </div>
-            </div>
-        </div>
-    `,
+    descricao: 'Play Store personalizada',
+    ui: '<iframe src="https://regal-sunflower-a82642.netlify.app/" style="width:100%; height:100%; border:none;"></iframe>',
     logica: () => ({ status: 'ok' })
 });
         
