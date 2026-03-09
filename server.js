@@ -1,3 +1,4 @@
+
 // server.js - Servidor principal do WebOS
 const WebSocket = require('ws');
 const http = require('http');
@@ -3136,8 +3137,7 @@ const clienteHTML = `
 
         <!-- Dock (macOS style) -->
         <div id="dock">
-            // No HTML, dentro da div id="dock", adicione esta linha antes do separador:
-<div class="dock-icon" data-tooltip="Play Store Custom" onclick="abrirApp('custom_play_store')">▶️</div>
+            <div class="dock-icon" data-tooltip="Play Store Custom" onclick="abrirApp('custom_play_store')">▶️</div>
             <div class="dock-icon" data-tooltip="Calculadora" onclick="abrirApp('calculadora')">🧮</div>
             <div class="dock-icon" data-tooltip="Arquivos" onclick="abrirApp('file_manager')">📁</div>
             <div class="dock-icon" data-tooltip="Bloco de Notas" onclick="abrirApp('bloco_notas')">📝</div>
