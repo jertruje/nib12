@@ -3107,29 +3107,37 @@ const clienteHTML = `
         <div id="dock">
 <button onclick="abrirPlayStore()">▶️</button>
 
-<div id="playstore" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:9999;">
+<div id="playstore" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#000;">
 
-<button onclick="fecharPlayStore()" style="position:absolute; top:10px; right:15px; font-size:25px; background:red; color:white; border:none; cursor:pointer; z-index:10000;">
+<button onclick="fecharPlayStore()" style="position:absolute; top:10px; right:15px; font-size:25px; background:red; color:white; border:none; cursor:pointer;">
 ✖
 </button>
 
-<iframe 
-src="https://regal-sunflower-a82642.netlify.app/" 
-style="width:100%; height:100%; border:none;">
-</iframe>
+<iframe src="https://regal-sunflower-a82642.netlify.app/" style="width:100%; height:100%; border:none;"></iframe>
 
 </div>
 
 <script>
+
 function abrirPlayStore(){
-document.getElementById("playstore").style.display="block";
+  let app = document.getElementById("playstore");
+  app.style.display = "block";
+
+  if (app.requestFullscreen) {
+    app.requestFullscreen();
+  }
 }
 
 function fecharPlayStore(){
-document.getElementById("playstore").style.display="none";
+  let app = document.getElementById("playstore");
+  app.style.display = "none";
+
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  }
 }
-</script>
-            <div class="dock-icon" data-tooltip="Calculadora" onclick="abrirApp('calculadora')">🧮</div>
+
+</script>        <div class="dock-icon" data-tooltip="Calculadora" onclick="abrirApp('calculadora')">🧮</div>
             <div class="dock-icon" data-tooltip="Arquivos" onclick="abrirApp('file_manager')">📁</div>
             <div class="dock-icon" data-tooltip="Bloco de Notas" onclick="abrirApp('bloco_notas')">📝</div>
             <div class="dock-icon" data-tooltip="Fotos" onclick="abrirApp('fotos')">🖼️</div>
