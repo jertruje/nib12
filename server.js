@@ -1724,7 +1724,23 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocket.Server({ server });
 const webos = new WebOSServer();
 
+const heartbeatInterval = setInterval(function ping() {
+    wss.clients.forEach(function each(ws) {
+        if (ws.isAlive === false) {
+            console.log('💔 Cliente não respondeu ao ping, terminando conexão forçadamente.');
+            return ws.terminate();
+        }
+        ws.isAlive = false;
+        ws.ping(() => {}); // A função vazia é para evitar erros em algumas versões
+    });
+}, 30000); // Envia um ping a cada 30 segundos
+
 wss.on('connection', (ws, req) => {
+    ws.isAlive = true;
+    ws.on('pong', () => {
+        ws.isAlive = true;
+    });
+
     const clientIp = req.socket.remoteAddress;
     console.log(`🔌 Novo cliente WebSocket conectado do IP: ${clientIp}`);
     
@@ -1854,6 +1870,10 @@ wss.on('connection', (ws, req) => {
             webos.sessoes.delete(tokenAtual);
         }
     });
+});
+
+wss.on('close', function close() {
+    clearInterval(heartbeatInterval);
 });
 
 // ============================================
