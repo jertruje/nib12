@@ -1879,7 +1879,7 @@ wss.on('close', function close() {
 // ============================================
 // INICIA SERVIDOR
 // ============================================
-const PORT = 8080;
+const PORT = process.env.PORT || 8080;
 
 server.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
@@ -1895,7 +1895,7 @@ server.on('error', (e) => {
     }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`
     ╔══════════════════════════════════════╗
     ║     🚀 WEBOS SERVER RODANDO          ║
@@ -3209,10 +3209,10 @@ let seletorCallbacks = new Map(); // reqId -> callback
 function conectarWebSocket() {
     const protocolo = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname || 'localhost';
-    const porta = window.location.port || '8080';
+    const porta = window.location.port ? ':' + window.location.port : '';
     
     try {
-        socket = new WebSocket(protocolo + '//' + host + ':' + porta);
+        socket = new WebSocket(protocolo + '//' + host + porta);
     } catch (e) {
         console.error('Erro ao criar WebSocket:', e);
         mostrarNotificacao('Erro crítico na conexão WebSocket', 'erro');
